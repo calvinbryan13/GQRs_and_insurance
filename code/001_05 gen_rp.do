@@ -452,12 +452,7 @@ restore
 *** multiple crops with rate parameter measurements for the county-year-crop
 *** combinations in this panel. In the end, we will end up keeping only one of 
 *** the four crops to have data that is at the county-year combo.
-
-	gen fips = (state_fips * 1000) + county_fips
-
-	merge m:1 fips year using "${datapath}USDA_corn_rps"
-		drop if _merge == 2
-		drop _merge
+use "${datapath}USDA_corn_rps", clear
 		
 	merge m:1 fips year using "${datapath}USDA_soybean_rps"
 		drop if _merge == 2
