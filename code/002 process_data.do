@@ -803,5 +803,5 @@ foreach crop of local crops {
 		
 }
 
-save "${datapath}nrd_policy_data", replace
+save "${datapath}nrd_data_cleaned", replace
 
