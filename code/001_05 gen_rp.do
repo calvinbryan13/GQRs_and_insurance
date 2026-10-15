@@ -144,7 +144,9 @@ forval i = 2011/2020 {
     }
 
     rename recordtypecode RTC
-    rename commodityyear year
+	destring RTC, replace force
+
+	rename commodityyear year
 
     * Retain additional ADM identifiers
     capture rename reinsuranceyear reinsurance_year
@@ -182,14 +184,16 @@ forval i = 2011/2020 {
     * Save individual year
     save "${datapath}rp`i'", replace
 
-    * Append to cumulative dataset
-    if `i' == 2011 {
-        save "${datapath}USDA_rps", replace
-    }
-    else {
-        append using "${datapath}USDA_rps"
-        save "${datapath}USDA_rps", replace
-    }
+    append using "${datapath}USDA_rps.dta"
+
+    * Recode insurance plan codes
+    replace insurance_plan_code = 1 if insurance_plan_code == 90
+    replace insurance_plan_code = 2 if inlist(insurance_plan_code, ///
+        44,42,45,25)
+
+    sort year state_fips county_fips commodity_rma
+
+    save "${datapath}USDA_rps.dta", replace
 
     sleep 1000
 }
