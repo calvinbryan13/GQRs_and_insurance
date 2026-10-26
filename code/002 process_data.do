@@ -13,7 +13,7 @@ import delimited "${datapath}paneled_weather_2000_2020.csv", clear
 ********************************************************************************	
 		**** Calculating APH and merging that data in here ***
 preserve	
-	do "${dopath}002_01 process_aph"
+	do "${dopath}old/002_01 process_aph_ALT.do"
 restore
 
 	merge m:1 fips year using "${datapath}aph_10year"
@@ -25,7 +25,7 @@ restore
 ********************************************************************************
 		*** Calculation production, area harvested, and variances ***	
 preserve	
-	do "${dopath}002_02 process_crop_var"
+	do "${dopath}old/002_02 process_crop_var_ALT.do"
 restore	
 
 	
@@ -725,10 +725,12 @@ foreach crop in corn sb sorghum {
 		replace drill_acre_mor = drill_acre_mor + nrd_share_18 + nrd_share_12 + nrd_share_23 if year > 2002
 		replace drill_acre_mor = drill_acre_mor + nrd_share_17 + nrd_share_24 if year > 2003
 		replace drill_acre_mor = drill_acre_mor + nrd_share_5 + nrd_share_2 if year > 2005
-		replace drill_acre_mor = drill_acre_mor + nrd_share_21 if year > 2006
+		* NRD 21 was already included at baseline; do not count it twice.
 		replace drill_acre_mor = drill_acre_mor + nrd_share_7 if year > 2007
 		replace drill_acre_mor = drill_acre_mor + nrd_share_14 + nrd_share_20 if year > 2013
 		replace drill_acre_mor = drill_acre_mor + nrd_share_13 if year > 2014
+		replace drill_acre_mor = 1 if drill_acre_mor > 1 & !missing(drill_acre_mor)
+		replace drill_acre_mor = 0 if drill_acre_mor < 0
 			la var drill_acre_mor "Share of county covered by Well OR Irrigated Acre Moratorium"
 	
 	gen allocation = 0
@@ -749,7 +751,7 @@ foreach crop in corn sb sorghum {
 
 	* 25 percent threshold
 	gen alloc_did = 0
-		replace alloc_did = 1 if allocation > 0.25
+		replace alloc_did = 1 if allocation >= 0.25
 		
 	bysort fips: egen min_cs = min(year) if alloc_did == 1
 	bysort fips: egen cs_did = max(min_cs)
@@ -757,7 +759,7 @@ foreach crop in corn sb sorghum {
 		
 	* 10 percent threshold
 	gen alloc_did2 = 0
-		replace alloc_did2 = 1 if allocation > 0.1
+		replace alloc_did2 = 1 if allocation >= 0.10
 		
 	bysort fips: egen min_cs2 = min(year) if alloc_did2 == 1
 	bysort fips: egen cs_did2 = max(min_cs2)

@@ -3,21 +3,47 @@
 *		to do a crop-specific analysis (starting with irrigated corn)		   *						   *
 ********************************************************************************	
 clear all
-gen _state = .
-save "${datapath}SOB_2002_2020", replace
 
-* importing SOB data from 2002-2020, but only for corn, soybean, sorghum, and wheat
+* Import all years using a consistent 27-column layout and storage types.
+* RMA code/name fields remain strings until after appending where needed;
+* numerical IDs and outcomes are explicitly converted to numeric.
 forval i = 2002/2020 {
-		import delimited "${rawpath}Summary of Business Reports\SOBSCCTPU`i'.TXT", delimiter("|") clear
-		keep if inlist(v7,41,81,11,51)
-		append using "${datapath}SOB_2002_2020", force
-		sleep 1000	
-		save "${datapath}SOB_2002_2020", replace
-		}
-		
-save "${datapath}SOB_2002_2020", replace
+    import delimited "${rawpath}Summary of Business Reports\SOBSCCTPU`i'.TXT", ///
+        delimiter("|") varnames(non) stringcols(_all) clear
 
-drop _state
+    * Stop rather than silently shifting fields if the file layout differs.
+    capture confirm variable v27
+    if _rc {
+        di as error "SOB `i': expected all 27 RMA fields."
+        exit 459
+    }
+    capture confirm variable v28
+    if !_rc {
+        di as error "SOB `i': more than 27 fields; inspect file layout."
+        exit 459
+    }
+
+    * Consistent numeric types across years; destring errors are intentional.
+    * Do NOT use destring, force: unexpected codes should be investigated.
+    foreach v in 1 2 5 7 9 12 14 16 20 22 23 24 25 26 27 {
+        replace v`v' = strtrim(v`v')
+        destring v`v', replace
+    }
+    * Monetary totals may exceed float precision.
+    recast double v20 v22 v23 v24 v25 v27
+
+    keep if inlist(v7, 41, 81, 11, 51)
+
+    if `i' == 2002 {
+        save "${datapath}SOB_2002_2020", replace
+    }
+    else {
+        append using "${datapath}SOB_2002_2020"
+        save "${datapath}SOB_2002_2020", replace
+    }
+}
+
+* Historical import complete; no append, force used.
 
 rename v1 year
 rename v2 state_fips
@@ -137,6 +163,14 @@ preserve
 	save "${datapath}SOB_2002_2020_collapsed", replace
 restore
 
+* Ingredients for acreage-weighted mean coverage percentages.
+* Loss ratios are NOT acreage-weighted; they are derived from gross
+* premium and indemnity totals in each aggregation block below.
+gen double cov_numerator = coverage_pct * ins_acres ///
+    if !missing(coverage_pct, ins_acres) & ins_acres > 0
+gen double cov_denominator = ins_acres ///
+    if !missing(coverage_pct, ins_acres) & ins_acres > 0
+
 *_______________________________________________________________________________
 * First, variables for CORN
 *_______________________________________________________________________________
@@ -229,11 +263,16 @@ preserve
 	save "${datapath}SOB_nonirrcorn", replace
 restore
 	
-* Corn Loss-Ratio collapsed to County-Year level, weighted by "reporting 
-* level amount"
+* Aggregate loss ratio (indemnity / gross premium) and acreage-weighted
+* average coverage percentage
 preserve
-	collapse (mean) loss_ratio coverage_pct [w=ins_acres], ///
-	by(fips year commodity_rma)
+	* RMA aggregate loss ratio = total indemnity / gross total premium.
+    * Maintain acreage-weighted coverage level as in the original script.
+    collapse (sum) indemnity_amt_SOB premium_amt cov_numerator cov_denominator, ///
+        by(fips year commodity_rma)
+    gen double loss_ratio = indemnity_amt_SOB / premium_amt if premium_amt > 0
+    gen double coverage_pct = cov_numerator / cov_denominator if cov_denominator > 0
+    drop indemnity_amt_SOB premium_amt cov_numerator cov_denominator
 	
 	keep if commodity_rma == 41
 	
@@ -245,8 +284,13 @@ preserve
 restore
 
 preserve
-	collapse (mean) loss_ratio coverage_pct [w=ins_acres], ///
-	by(fips year commodity_rma irrigation)
+	* RMA aggregate loss ratio = total indemnity / gross total premium.
+    * Maintain acreage-weighted coverage level as in the original script.
+    collapse (sum) indemnity_amt_SOB premium_amt cov_numerator cov_denominator, ///
+        by(fips year commodity_rma irrigation)
+    gen double loss_ratio = indemnity_amt_SOB / premium_amt if premium_amt > 0
+    gen double coverage_pct = cov_numerator / cov_denominator if cov_denominator > 0
+    drop indemnity_amt_SOB premium_amt cov_numerator cov_denominator
 	
 	keep if commodity_rma == 41
 	keep if irrigation == 1
@@ -259,8 +303,13 @@ preserve
 restore
 
 preserve
-	collapse (mean) loss_ratio coverage_pct [w=ins_acres], ///
-	by(fips year commodity_rma irrigation)
+	* RMA aggregate loss ratio = total indemnity / gross total premium.
+    * Maintain acreage-weighted coverage level as in the original script.
+    collapse (sum) indemnity_amt_SOB premium_amt cov_numerator cov_denominator, ///
+        by(fips year commodity_rma irrigation)
+    gen double loss_ratio = indemnity_amt_SOB / premium_amt if premium_amt > 0
+    gen double coverage_pct = cov_numerator / cov_denominator if cov_denominator > 0
+    drop indemnity_amt_SOB premium_amt cov_numerator cov_denominator
 	
 	keep if commodity_rma == 41
 	keep if irrigation == 2
@@ -364,11 +413,16 @@ preserve
 	save "${datapath}SOB_nonirrsb", replace
 restore
 	
-* Corn Loss-Ratio collapsed to County-Year level, weighted by "reporting 
-* level amount"
+* Aggregate loss ratio (indemnity / gross premium) and acreage-weighted
+* average coverage percentage
 preserve
-	collapse (mean) loss_ratio coverage_pct [w=ins_acres], ///
-	by(fips year commodity_rma)
+	* RMA aggregate loss ratio = total indemnity / gross total premium.
+    * Maintain acreage-weighted coverage level as in the original script.
+    collapse (sum) indemnity_amt_SOB premium_amt cov_numerator cov_denominator, ///
+        by(fips year commodity_rma)
+    gen double loss_ratio = indemnity_amt_SOB / premium_amt if premium_amt > 0
+    gen double coverage_pct = cov_numerator / cov_denominator if cov_denominator > 0
+    drop indemnity_amt_SOB premium_amt cov_numerator cov_denominator
 	
 	keep if commodity_rma == 81
 	
@@ -380,8 +434,13 @@ preserve
 restore
 
 preserve
-	collapse (mean) loss_ratio coverage_pct [w=ins_acres], ///
-	by(fips year commodity_rma irrigation)
+	* RMA aggregate loss ratio = total indemnity / gross total premium.
+    * Maintain acreage-weighted coverage level as in the original script.
+    collapse (sum) indemnity_amt_SOB premium_amt cov_numerator cov_denominator, ///
+        by(fips year commodity_rma irrigation)
+    gen double loss_ratio = indemnity_amt_SOB / premium_amt if premium_amt > 0
+    gen double coverage_pct = cov_numerator / cov_denominator if cov_denominator > 0
+    drop indemnity_amt_SOB premium_amt cov_numerator cov_denominator
 	
 	keep if commodity_rma == 81
 	keep if irrigation == 1
@@ -394,8 +453,13 @@ preserve
 restore
 
 preserve
-	collapse (mean) loss_ratio coverage_pct [w=ins_acres], ///
-	by(fips year commodity_rma irrigation)
+	* RMA aggregate loss ratio = total indemnity / gross total premium.
+    * Maintain acreage-weighted coverage level as in the original script.
+    collapse (sum) indemnity_amt_SOB premium_amt cov_numerator cov_denominator, ///
+        by(fips year commodity_rma irrigation)
+    gen double loss_ratio = indemnity_amt_SOB / premium_amt if premium_amt > 0
+    gen double coverage_pct = cov_numerator / cov_denominator if cov_denominator > 0
+    drop indemnity_amt_SOB premium_amt cov_numerator cov_denominator
 	
 	keep if commodity_rma == 81
 	keep if irrigation == 2
@@ -499,11 +563,16 @@ preserve
 	save "${datapath}SOB_nonirrsorghum", replace
 restore
 	
-* Corn Loss-Ratio collapsed to County-Year level, weighted by "reporting 
-* level amount"
+* Aggregate loss ratio (indemnity / gross premium) and acreage-weighted
+* average coverage percentage
 preserve
-	collapse (mean) loss_ratio coverage_pct [w=ins_acres], ///
-	by(fips year commodity_rma)
+	* RMA aggregate loss ratio = total indemnity / gross total premium.
+    * Maintain acreage-weighted coverage level as in the original script.
+    collapse (sum) indemnity_amt_SOB premium_amt cov_numerator cov_denominator, ///
+        by(fips year commodity_rma)
+    gen double loss_ratio = indemnity_amt_SOB / premium_amt if premium_amt > 0
+    gen double coverage_pct = cov_numerator / cov_denominator if cov_denominator > 0
+    drop indemnity_amt_SOB premium_amt cov_numerator cov_denominator
 	
 	keep if commodity_rma == 51
 	
@@ -515,8 +584,13 @@ preserve
 restore
 
 preserve
-	collapse (mean) loss_ratio coverage_pct [w=ins_acres], ///
-	by(fips year commodity_rma irrigation)
+	* RMA aggregate loss ratio = total indemnity / gross total premium.
+    * Maintain acreage-weighted coverage level as in the original script.
+    collapse (sum) indemnity_amt_SOB premium_amt cov_numerator cov_denominator, ///
+        by(fips year commodity_rma irrigation)
+    gen double loss_ratio = indemnity_amt_SOB / premium_amt if premium_amt > 0
+    gen double coverage_pct = cov_numerator / cov_denominator if cov_denominator > 0
+    drop indemnity_amt_SOB premium_amt cov_numerator cov_denominator
 	
 	keep if commodity_rma == 51
 	keep if irrigation == 1
@@ -529,8 +603,13 @@ preserve
 restore
 
 preserve
-	collapse (mean) loss_ratio coverage_pct [w=ins_acres], ///
-	by(fips year commodity_rma irrigation)
+	* RMA aggregate loss ratio = total indemnity / gross total premium.
+    * Maintain acreage-weighted coverage level as in the original script.
+    collapse (sum) indemnity_amt_SOB premium_amt cov_numerator cov_denominator, ///
+        by(fips year commodity_rma irrigation)
+    gen double loss_ratio = indemnity_amt_SOB / premium_amt if premium_amt > 0
+    gen double coverage_pct = cov_numerator / cov_denominator if cov_denominator > 0
+    drop indemnity_amt_SOB premium_amt cov_numerator cov_denominator
 	
 	keep if commodity_rma == 51
 	keep if irrigation == 2

@@ -9,9 +9,17 @@
 	rename value irr_corn_yield
 		la var irr_corn_yield "Irrigated Corn Yield (Bushels per Acre)"
 		
-	gen fips = (state_fips * 1000) + county_fips
+	* County-level panel requires a valid state, county, and year.
+    * Retain missing YIELD values; only exclude unidentified observations.
+    count if missing(state_fips, county_fips, year)
+    if r(N) > 0 {
+        di as text "Dropping " r(N) " records lacking state/county/year identifiers"
+        drop if missing(state_fips, county_fips, year)
+    }
+
+    gen fips = (state_fips * 1000) + county_fips
 	
-	collapse (sum) irr_corn_yield, by(fips year)
+	collapse (mean) irr_corn_yield, by(fips year)
 	
 	save "${rawpath}irr_corn_yield", replace
 	
@@ -26,9 +34,17 @@ preserve
 	rename value irr_sb_yield
 		la var irr_sb_yield "Irrigated Soybean Yield (Bushels per Acre)"
 		
-	gen fips = (state_fips * 1000) + county_fips
+	* County-level panel requires a valid state, county, and year.
+    * Retain missing YIELD values; only exclude unidentified observations.
+    count if missing(state_fips, county_fips, year)
+    if r(N) > 0 {
+        di as text "Dropping " r(N) " records lacking state/county/year identifiers"
+        drop if missing(state_fips, county_fips, year)
+    }
+
+    gen fips = (state_fips * 1000) + county_fips
 	
-	collapse (sum) irr_sb_yield, by(fips year)
+	collapse (mean) irr_sb_yield, by(fips year)
 	
 	save "${rawpath}irr_sb_yield", replace
 restore
@@ -47,9 +63,17 @@ preserve
 	rename value irr_sorghum_yield
 		la var irr_sorghum_yield "Irrigated sorghum Yield (Bushels per Acre)"
 		
-	gen fips = (state_fips * 1000) + county_fips
+	* County-level panel requires a valid state, county, and year.
+    * Retain missing YIELD values; only exclude unidentified observations.
+    count if missing(state_fips, county_fips, year)
+    if r(N) > 0 {
+        di as text "Dropping " r(N) " records lacking state/county/year identifiers"
+        drop if missing(state_fips, county_fips, year)
+    }
+
+    gen fips = (state_fips * 1000) + county_fips
 	
-	collapse (sum) irr_sorghum_yield, by(fips year)
+	collapse (mean) irr_sorghum_yield, by(fips year)
 	
 	save "${rawpath}irr_sorghum_yield", replace	
 restore
@@ -69,9 +93,17 @@ preserve
 	rename value corn_yield
 		la var corn_yield "Corn Yield (Bushels per Acre)"
 	
-	gen fips = (state_fips * 1000) + county_fips
+	* County-level panel requires a valid state, county, and year.
+    * Retain missing YIELD values; only exclude unidentified observations.
+    count if missing(state_fips, county_fips, year)
+    if r(N) > 0 {
+        di as text "Dropping " r(N) " records lacking state/county/year identifiers"
+        drop if missing(state_fips, county_fips, year)
+    }
+
+    gen fips = (state_fips * 1000) + county_fips
 	
-	collapse (sum) corn_yield, by(fips year)
+	collapse (mean) corn_yield, by(fips year)
 		
 	gen commodity_rma = 81
 	
@@ -93,9 +125,17 @@ preserve
 	rename value sb_yield
 		la var sb_yield "Soybean Yield (Bushels per Acre)"
 	
-	gen fips = (state_fips * 1000) + county_fips
+	* County-level panel requires a valid state, county, and year.
+    * Retain missing YIELD values; only exclude unidentified observations.
+    count if missing(state_fips, county_fips, year)
+    if r(N) > 0 {
+        di as text "Dropping " r(N) " records lacking state/county/year identifiers"
+        drop if missing(state_fips, county_fips, year)
+    }
+
+    gen fips = (state_fips * 1000) + county_fips
 	
-	collapse (sum) sb_yield, by(fips year)
+	collapse (mean) sb_yield, by(fips year)
 		
 	gen commodity_rma = 81
 	
@@ -118,9 +158,17 @@ preserve
 		destring sorghum_yield, force replace
 		la var sorghum_yield "Sorghum Yield (Bushels per Acre)"
 	
-	gen fips = (state_fips * 1000) + county_fips
+	* County-level panel requires a valid state, county, and year.
+    * Retain missing YIELD values; only exclude unidentified observations.
+    count if missing(state_fips, county_fips, year)
+    if r(N) > 0 {
+        di as text "Dropping " r(N) " records lacking state/county/year identifiers"
+        drop if missing(state_fips, county_fips, year)
+    }
+
+    gen fips = (state_fips * 1000) + county_fips
 	
-	collapse (sum) sorghum_yield, by(fips year)
+	collapse (mean) sorghum_yield, by(fips year)
 		
 	gen commodity_rma = 51
 	
@@ -130,29 +178,27 @@ restore
 	merge m:1 fips year using "${rawpath}sorghum_yield"
 		drop _merge
 			
-*** REPLACING MISSING VALUES
+*** PRESERVE MISSING YIELDS: missing is not equivalent to zero production
+* Verify panel uniqueness and establish calendar-year lags within county
+* Final validation after merging all six crop yield series
+count if missing(fips, year)
+assert r(N) == 0
+isid fips year
+xtset fips year
 
-	replace corn_yield = 0 if corn_yield == .
-	replace sorghum_yield = 0 if sorghum_yield == .
-	replace sb_yield = 0 if sb_yield == .
-	replace irr_corn_yield = 0 if irr_corn_yield == .
-	replace irr_sorghum_yield = 0 if irr_sorghum_yield == .
-	replace irr_sb_yield = 0 if irr_sb_yield == .
 	
 ************************* NOW ACTUALLY CALCULATING APH *************************
 	
 *********************** Calculating APH for Irrigated Corn
 preserve
 	forval i=1/10 {
-		gen irr_corn_yield_lag`i' = irr_corn_yield[_n-`i']
-	}
-	
-		egen irr_corn_aph10year = rowtotal(irr_corn_yield_lag1 irr_corn_yield_lag2 ///
-			irr_corn_yield_lag3 irr_corn_yield_lag4 irr_corn_yield_lag5 ///
-			irr_corn_yield_lag6 irr_corn_yield_lag7 irr_corn_yield_lag8 ///
-			irr_corn_yield_lag9 irr_corn_yield_lag10)
-			
-		replace irr_corn_aph10year = irr_corn_aph10year/10
+        gen double irr_corn_yield_lag`i' = L`i'.irr_corn_yield
+    }
+
+    * Average only nonmissing yields in the prior ten CALENDAR years.
+    * A count is retained so sample restrictions can be imposed downstream.
+    egen irr_corn_aph10year = rowmean(irr_corn_yield_lag1-irr_corn_yield_lag10)
+    egen irr_corn_aph_nyears = rownonmiss(irr_corn_yield_lag1-irr_corn_yield_lag10)
 			la var irr_corn_aph10year "10 year APH (irr corn yield)"
 
 	drop if fips == .
@@ -164,15 +210,13 @@ restore
 *********************** Calculating APH for Corn
 preserve
 	forval i=1/10 {
-		gen corn_yield_lag`i' = corn_yield[_n-`i']
-	}
-	
-		egen corn_aph10year = rowtotal(corn_yield_lag1 corn_yield_lag2 ///
-			corn_yield_lag3 corn_yield_lag4 corn_yield_lag5 ///
-			corn_yield_lag6 corn_yield_lag7 corn_yield_lag8 ///
-			corn_yield_lag9 corn_yield_lag10)
-			
-		replace corn_aph10year = corn_aph10year/10
+        gen double corn_yield_lag`i' = L`i'.corn_yield
+    }
+
+    * Average only nonmissing yields in the prior ten CALENDAR years.
+    * A count is retained so sample restrictions can be imposed downstream.
+    egen corn_aph10year = rowmean(corn_yield_lag1-corn_yield_lag10)
+    egen corn_aph_nyears = rownonmiss(corn_yield_lag1-corn_yield_lag10)
 			la var corn_aph10year "10 year APH (corn yield)"
 
 	drop if fips == .
@@ -184,15 +228,13 @@ restore
 *********************** Calculating APH for Irrigated Soybean
 preserve
 	forval i=1/10 {
-		gen irr_sb_yield_lag`i' = irr_sb_yield[_n-`i']
-	}
-	
-		egen irr_sb_aph10year = rowtotal(irr_sb_yield_lag1 irr_sb_yield_lag2 ///
-			irr_sb_yield_lag3 irr_sb_yield_lag4 irr_sb_yield_lag5 ///
-			irr_sb_yield_lag6 irr_sb_yield_lag7 irr_sb_yield_lag8 ///
-			irr_sb_yield_lag9 irr_sb_yield_lag10)
-			
-		replace irr_sb_aph10year = irr_sb_aph10year/10
+        gen double irr_sb_yield_lag`i' = L`i'.irr_sb_yield
+    }
+
+    * Average only nonmissing yields in the prior ten CALENDAR years.
+    * A count is retained so sample restrictions can be imposed downstream.
+    egen irr_sb_aph10year = rowmean(irr_sb_yield_lag1-irr_sb_yield_lag10)
+    egen irr_sb_aph_nyears = rownonmiss(irr_sb_yield_lag1-irr_sb_yield_lag10)
 			la var irr_sb_aph10year "10 year APH (irr soybean yield)"
 
 	drop if fips == .
@@ -204,15 +246,13 @@ restore
 *********************** Calculating APH for Soybean
 preserve
 	forval i=1/10 {
-		gen sb_yield_lag`i' = sb_yield[_n-`i']
-	}
-	
-		egen sb_aph10year = rowtotal(sb_yield_lag1 sb_yield_lag2 ///
-			sb_yield_lag3 sb_yield_lag4 sb_yield_lag5 ///
-			sb_yield_lag6 sb_yield_lag7 sb_yield_lag8 ///
-			sb_yield_lag9 sb_yield_lag10)
-			
-		replace sb_aph10year = sb_aph10year/10
+        gen double sb_yield_lag`i' = L`i'.sb_yield
+    }
+
+    * Average only nonmissing yields in the prior ten CALENDAR years.
+    * A count is retained so sample restrictions can be imposed downstream.
+    egen sb_aph10year = rowmean(sb_yield_lag1-sb_yield_lag10)
+    egen sb_aph_nyears = rownonmiss(sb_yield_lag1-sb_yield_lag10)
 			la var sb_aph10year "10 year APH (soybean yield)"
 
 	drop if fips == .
@@ -224,15 +264,13 @@ restore
 *********************** Calculating APH for Irrigated Sorghum
 preserve
 	forval i=1/10 {
-		gen irr_sorghum_yield_lag`i' = irr_sorghum_yield[_n-`i']
-	}
-	
-		egen irr_sorghum_aph10year = rowtotal(irr_sorghum_yield_lag1 irr_sorghum_yield_lag2 ///
-			irr_sorghum_yield_lag3 irr_sorghum_yield_lag4 irr_sorghum_yield_lag5 ///
-			irr_sorghum_yield_lag6 irr_sorghum_yield_lag7 irr_sorghum_yield_lag8 ///
-			irr_sorghum_yield_lag9 irr_sorghum_yield_lag10)
-			
-		replace irr_sorghum_aph10year = irr_sorghum_aph10year/10
+        gen double irr_sorghum_yield_lag`i' = L`i'.irr_sorghum_yield
+    }
+
+    * Average only nonmissing yields in the prior ten CALENDAR years.
+    * A count is retained so sample restrictions can be imposed downstream.
+    egen irr_sorghum_aph10year = rowmean(irr_sorghum_yield_lag1-irr_sorghum_yield_lag10)
+    egen irr_sorghum_aph_nyears = rownonmiss(irr_sorghum_yield_lag1-irr_sorghum_yield_lag10)
 			la var irr_sorghum_aph10year "10 year APH (irr sorghum yield)"
 
 	drop if fips == .
@@ -244,15 +282,13 @@ restore
 *********************** Calculating APH for Sorghum
 preserve
 	forval i=1/10 {
-		gen sorghum_yield_lag`i' = sorghum_yield[_n-`i']
-	}
-	
-		egen sorghum_aph10year = rowtotal(sorghum_yield_lag1 sorghum_yield_lag2 ///
-			sorghum_yield_lag3 sorghum_yield_lag4 sorghum_yield_lag5 ///
-			sorghum_yield_lag6 sorghum_yield_lag7 sorghum_yield_lag8 ///
-			sorghum_yield_lag9 sorghum_yield_lag10)
-			
-		replace sorghum_aph10year = sorghum_aph10year/10
+        gen double sorghum_yield_lag`i' = L`i'.sorghum_yield
+    }
+
+    * Average only nonmissing yields in the prior ten CALENDAR years.
+    * A count is retained so sample restrictions can be imposed downstream.
+    egen sorghum_aph10year = rowmean(sorghum_yield_lag1-sorghum_yield_lag10)
+    egen sorghum_aph_nyears = rownonmiss(sorghum_yield_lag1-sorghum_yield_lag10)
 			la var sorghum_aph10year "10 year APH (sorghum yield)"
 
 	drop if fips == .
