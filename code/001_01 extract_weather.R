@@ -1,11 +1,21 @@
 # ==============================================================================
-# 001_01 extract_weather_revised.R
+# 001_01_extract_weather_cropland_5yr_march.R
 #
 # Purpose:
-#   Create a county-year weather panel for 2000-2020 containing:
+#   Create a county-year AGRICULTURAL-LAND weather panel for 2000-2020:
 #     1. Mean annual maximum temperature
 #     2. Mean annual PDSI
 #     3. Total annual precipitation
+#     4. Trailing 5-year means of each of the three annual measures
+#     5. PDSI from the final observation dated in March of each year
+#        (also records the actual March observation date)
+#
+# Added panel columns: maxtemp_5yr_avg, pdsi_5yr_avg, precip_5yr_avg,
+#                      pdsi_march_final, pdsi_march_date.
+#
+# A 5-year mean for year Y uses Y-4, ..., Y (inclusive). It is NA if
+# any of those five annual values are missing. Thus 2000-2003 have
+# NA 5-year averages with the current 2000-2020 input period.
 #
 # Raw weather data are stored in:
 #   data/raw_data/maxtemp/
@@ -17,7 +27,16 @@
 #   precip/pr_YYYY.nc
 #   pdsi/           one NetCDF file containing the full PDSI time series
 #
-# County averages are area-weighted using exactextractr::exact_extract().
+# Spatial extraction uses each county's intersection with cropland_area.shp,
+# not the full county. The intersection is calculated once and reused for all
+# years and weather variables. exact_extract(..., "mean") weights cells by the
+# fraction of each weather-grid cell covered by the county's cropland mask,
+# consistent with the original script.
+#
+# Counties with no mapped cropland remain in the panel with NA weather values.
+# This static cropland mask is applied to every year (2000-2020).
+# The last-March PDSI is taken from the latest PDSI layer whose timestamp
+# falls in March, NOT from a calendar-month mean or March 31 interpolation.
 # ==============================================================================
 
 
@@ -51,61 +70,191 @@ maxtemp_path <- file.path(cde_path, "maxtemp")
 pdsi_path    <- file.path(cde_path, "pdsi")
 precip_path  <- file.path(cde_path, "precip")
 
-county_file <- "data/map data/Counties/cb_2017_us_county_500k.shp"
+county_file   <- "data/map data/Counties/cb_2017_us_county_500k.shp"
+cropland_file <- "data/map data/cropland_area_usgs.shp"
 
-output_file <- "data/processed data/paneled_weather_2000_2020.csv"
+# Use distinct outputs so the original full-county weather panel is preserved.
+output_file   <- "data/processed data/paneled_weather_cropland_2000_2020.csv"
+coverage_file <- "data/processed data/county_cropland_coverage.csv"
 
 years <- 2000:2020
 
 
 # ------------------------------------------------------------------------------
-# 3. Read county boundaries
+# 3. Create county-specific cropland extraction polygons
 # ------------------------------------------------------------------------------
 
-counties <- st_read(county_file, quiet = TRUE) %>%
-  select(GEOID, geometry)
+# The cropland shapefile is assumed to contain polygons representing ag-land.
+# If it includes non-agricultural classes, filter those out BEFORE intersecting.
+if (!file.exists(county_file)) {
+  stop("County shapefile not found: ", county_file)
+}
+if (!file.exists(cropland_file)) {
+  stop("Cropland shapefile not found: ", cropland_file)
+}
 
-# Preserve leading zeroes in county FIPS codes
+message("Reading county and cropland boundaries...")
+
+counties <- st_read(county_file, quiet = TRUE) %>%
+  select(GEOID)
+
+# Preserve leading zeroes in county FIPS codes.
 counties$GEOID <- as.character(counties$GEOID)
 
+if (anyNA(counties$GEOID) || anyDuplicated(counties$GEOID)) {
+  stop("County GEOID values must be nonmissing and unique.")
+}
+
+# Only the geometries are needed from the cropland layer.
+cropland_source <- st_read(cropland_file, quiet = TRUE)
+
+if (nrow(cropland_source) == 0L) {
+  stop("The cropland shapefile contains no features.")
+}
+if (is.na(st_crs(counties)) || is.na(st_crs(cropland_source))) {
+  stop("Both shapefiles need a defined CRS. Do not assign an unverified CRS.")
+}
+
+# Use a projected equal-area CRS for the intersection and coverage diagnostics.
+# EPSG:6933 is global, avoiding a CONUS-only projection for US counties.
+overlay_crs <- 6933
+
+counties_overlay <- counties %>%
+  st_transform(overlay_crs) %>%
+  st_make_valid() %>%
+  st_collection_extract("POLYGON", warn = FALSE)
+
+cropland_overlay <- st_sf(geometry = st_geometry(cropland_source)) %>%
+  st_transform(overlay_crs) %>%
+  st_make_valid() %>%
+  st_collection_extract("POLYGON", warn = FALSE)
+
+rm(cropland_source)
+
+counties_overlay <- counties_overlay[
+  !st_is_empty(counties_overlay), , drop = FALSE
+]
+cropland_overlay <- cropland_overlay[
+  !st_is_empty(cropland_overlay), , drop = FALSE
+]
+
+if (nrow(cropland_overlay) == 0L) {
+  stop("No polygon geometries remain in the cropland shapefile.")
+}
+
+message("Intersecting counties with cropland (this is done once)...")
+
+# This may be slow for a very detailed cropland shapefile. Every cropland
+# polygon is clipped to its county, and overlapping/adjacent pieces are
+# dissolved by GEOID to prevent duplicate coverage in raster extraction.
+county_cropland_parts <- suppressWarnings(
+  st_intersection(counties_overlay, cropland_overlay)
+)
+county_cropland_parts <- st_collection_extract(
+  county_cropland_parts, "POLYGON", warn = FALSE
+)
+county_cropland_parts <- county_cropland_parts[
+  !st_is_empty(county_cropland_parts), , drop = FALSE
+]
+
+if (nrow(county_cropland_parts) == 0L) {
+  stop("The county and cropland shapefiles have no polygonal overlap. Check their locations and CRSs.")
+}
+
+county_cropland <- county_cropland_parts %>%
+  group_by(GEOID) %>%
+  summarise(.groups = "drop") %>%
+  st_make_valid() %>%
+  st_collection_extract("POLYGON", warn = FALSE)
+
+county_cropland <- county_cropland[
+  !st_is_empty(county_cropland), , drop = FALSE
+]
+
+rm(county_cropland_parts, cropland_overlay)
+
+if (anyDuplicated(county_cropland$GEOID)) {
+  stop("The cropland mask must contain no more than one geometry per county.")
+}
+
+# Diagnostic: cropland-covered area and share for every original county.
+# Counties with no intersecting cropland have zero covered area.
+county_coverage <- data.frame(
+  GEOID = counties_overlay$GEOID,
+  county_area_km2 = as.numeric(st_area(counties_overlay)) / 1e6
+) %>%
+  left_join(
+    data.frame(
+      GEOID = county_cropland$GEOID,
+      cropland_area_km2 = as.numeric(st_area(county_cropland)) / 1e6
+    ),
+    by = "GEOID"
+  ) %>%
+  mutate(
+    cropland_area_km2 = replace_na(cropland_area_km2, 0),
+    cropland_share = if_else(
+      county_area_km2 > 0,
+      cropland_area_km2 / county_area_km2,
+      NA_real_
+    )
+  ) %>%
+  rename(fips = GEOID)
+
+message("Counties in original boundaries: ", nrow(counties))
+message("Counties with intersecting cropland: ", nrow(county_cropland))
+message("Counties without mapped cropland: ",
+        nrow(counties) - nrow(county_cropland))
 
 # ------------------------------------------------------------------------------
 # 4. Helper functions
 # ------------------------------------------------------------------------------
 
-# This function extracts an area-weighted county mean from every raster layer.
+# Extract a coverage-fraction-weighted cropland mean for every raster layer.
+# The original county list defines the row order. Counties without cropland
+# are explicitly filled with NA, so the output keeps the same panel universe.
 #
-# Output:
-#   One row per county
-#   One column per raster layer/time step
-#
-extract_county_timeseries <- function(r, counties_sf) {
+# Output: one row per original county and one column per raster layer.
+extract_county_timeseries <- function(r, cropland_counties_sf, all_counties_sf) {
 
-  # Transform counties to raster CRS
-  counties_temp <- st_transform(counties_sf, crs(r))
+  # The intersection polygons were built in EPSG:6933; transform to the
+  # native CRS of the weather raster before exact extraction.
+  crop_in_raster_crs <- st_transform(cropland_counties_sf, crs(r))
 
-  # exact_extract(..., "mean") uses cell coverage fractions, so cells that
-  # only partially overlap a county receive proportionally less weight.
+  # As in the original script, "mean" weights each raster cell by its
+  # fraction of overlap with the agricultural-land portion of the county.
   extracted <- exact_extract(
     r,
-    counties_temp,
+    crop_in_raster_crs,
     fun = "mean",
     progress = FALSE
   )
 
-  extracted <- as.data.frame(extracted)
-
-  # exact_extract may return a vector when the raster has only one layer.
-  if (ncol(extracted) == 0) {
-    extracted <- data.frame(value = extracted)
+  # Works for either a single raster layer (vector) or many (data frame).
+  extracted_matrix <- as.matrix(extracted)
+  if (nrow(extracted_matrix) != nrow(crop_in_raster_crs) ||
+      ncol(extracted_matrix) != nlyr(r)) {
+    stop("Unexpected extraction dimensions; check the raster and mask.")
   }
 
-  extracted <- cbind(
-    GEOID = counties_temp$GEOID,
-    extracted
+  # Explicitly retain counties lacking cropland, with missing values.
+  county_values <- matrix(
+    NA_real_, nrow = nrow(all_counties_sf), ncol = nlyr(r)
   )
+  county_index <- match(
+    crop_in_raster_crs$GEOID, all_counties_sf$GEOID
+  )
+  if (anyNA(county_index)) {
+    stop("Cropland mask contains a GEOID not found in original counties.")
+  }
 
-  return(extracted)
+  county_values[county_index, ] <- extracted_matrix
+  colnames(county_values) <- paste0("layer_", seq_len(nlyr(r)))
+
+  data.frame(
+    GEOID = as.character(all_counties_sf$GEOID),
+    county_values,
+    check.names = FALSE
+  )
 }
 
 
@@ -278,7 +427,8 @@ maxtemp_list <- map(years, function(yr) {
 
   county_values <- extract_county_timeseries(
     r = r,
-    counties_sf = counties
+    cropland_counties_sf = county_cropland,
+    all_counties_sf = counties
   )
 
   annual <- collapse_one_year(
@@ -318,7 +468,8 @@ precip_list <- map(years, function(yr) {
 
   county_values <- extract_county_timeseries(
     r = r,
-    counties_sf = counties
+    cropland_counties_sf = county_cropland,
+    all_counties_sf = counties
   )
 
   annual <- collapse_one_year(
@@ -381,10 +532,11 @@ pdsi_r <- pdsi_r[[keep_layers]]
 pdsi_dates <- pdsi_dates[keep_layers]
 
 
-# Extract county mean for every PDSI time step.
+# Extract cropland-only county means for every PDSI time step.
 pdsi_county_wide <- extract_county_timeseries(
   r = pdsi_r,
-  counties_sf = counties
+  cropland_counties_sf = county_cropland,
+  all_counties_sf = counties
 )
 
 
@@ -405,7 +557,7 @@ pdsi_long <- pdsi_county_wide %>%
 
 
 # Annual mean PDSI:
-# Every 5-day PDSI observation receives equal temporal weight.
+# Every PDSI observation receives equal temporal weight, as in the original.
 pdsi_annual <- pdsi_long %>%
   filter(year %in% years) %>%
   group_by(GEOID, year) %>%
@@ -416,8 +568,51 @@ pdsi_annual <- pdsi_long %>%
   rename(fips = GEOID)
 
 
+# Final March PDSI:
+# For each year, choose the LAST PDSI raster observation with a timestamp
+# in March. This works whether PDSI is daily, 5-day, or monthly; for a 5-day
+# series the chosen date will usually be earlier than March 31.
+# If the NetCDF has no March observation in a year, the panel gets NA.
+pdsi_layer_lookup <- tibble(
+  layer_id = seq_along(pdsi_dates),
+  date = pdsi_dates,
+  year = year(pdsi_dates)
+)
+
+pdsi_march_last_layers <- pdsi_layer_lookup %>%
+  filter(month(date) == 3) %>%
+  arrange(year, date, layer_id) %>%
+  group_by(year) %>%
+  slice_tail(n = 1) %>%
+  ungroup()
+
+missing_march_years <- setdiff(years, pdsi_march_last_layers$year)
+if (length(missing_march_years) > 0L) {
+  warning(
+    "No PDSI observation dated in March for year(s): ",
+    paste(missing_march_years, collapse = ", "),
+    ". pdsi_march_final will be NA for those years."
+  )
+}
+
+message("Final March PDSI observations (date used each year):")
+print(pdsi_march_last_layers %>% select(year, date))
+
+pdsi_march_annual <- pdsi_long %>%
+  inner_join(
+    pdsi_march_last_layers %>% select(year, layer_id, date),
+    by = c("year", "layer_id", "date")
+  ) %>%
+  transmute(
+    fips = as.character(GEOID),
+    year,
+    pdsi_march_final = PDSI,
+    pdsi_march_date = date
+  )
+
+
 # ------------------------------------------------------------------------------
-# 8. Merge weather variables into one county-year panel
+# 8. Merge cropland weather variables into one county-year panel
 # ------------------------------------------------------------------------------
 
 message("Merging county-year weather data...")
@@ -425,11 +620,44 @@ message("Merging county-year weather data...")
 weather_panel <- maxtemp_annual %>%
   full_join(pdsi_annual, by = c("fips", "year")) %>%
   full_join(precip_annual, by = c("fips", "year")) %>%
+  left_join(pdsi_march_annual, by = c("fips", "year")) %>%
   arrange(fips, year)
 
 
 # ------------------------------------------------------------------------------
-# 9. Basic checks
+# 9. Trailing 5-year means of the annual cropland weather measures
+# ------------------------------------------------------------------------------
+
+# Uses the current year and preceding four calendar years (e.g., the
+# 2010 value averages 2006-2010). No partial windows are calculated.
+# stats::filter propagates NA when even one year in the window is missing.
+# These are averages of ANNUAL values: the precipitation version is the
+# average annual precipitation total across five years, not a five-year sum.
+rolling_five_year_mean <- function(x) {
+  as.numeric(stats::filter(x, filter = rep(1 / 5, 5), sides = 1))
+}
+
+message("Calculating trailing 5-year weather averages...")
+
+weather_panel <- weather_panel %>%
+  group_by(fips) %>%
+  arrange(year, .by_group = TRUE) %>%
+  mutate(
+    maxtemp_5yr_avg = rolling_five_year_mean(maxtemp),
+    pdsi_5yr_avg    = rolling_five_year_mean(pdsi),
+    precip_5yr_avg  = rolling_five_year_mean(precip)
+  ) %>%
+  ungroup() %>%
+  select(
+    fips, year, maxtemp, pdsi, precip,
+    maxtemp_5yr_avg, pdsi_5yr_avg, precip_5yr_avg,
+    pdsi_march_final, pdsi_march_date
+  ) %>%
+  arrange(fips, year)
+
+
+# ------------------------------------------------------------------------------
+# 10. Basic checks
 # ------------------------------------------------------------------------------
 
 message("Running basic checks...")
@@ -448,19 +676,40 @@ message("Number of counties: ",
 message("Number of county-year observations: ",
         nrow(weather_panel))
 
+# Same one-row-per-county-per-year structure as the original script.
+stopifnot(
+  nrow(weather_panel) == nrow(counties) * length(years),
+  !anyDuplicated(weather_panel[c("fips", "year")]),
+  all(names(weather_panel) == c(
+    "fips", "year", "maxtemp", "pdsi", "precip",
+    "maxtemp_5yr_avg", "pdsi_5yr_avg", "precip_5yr_avg",
+    "pdsi_march_final", "pdsi_march_date"
+  )),
+  all(weather_panel$year %in% years),
+  all(is.na(weather_panel$maxtemp_5yr_avg[weather_panel$year < min(years) + 4L])),
+  all(is.na(weather_panel$pdsi_5yr_avg[weather_panel$year < min(years) + 4L])),
+  all(is.na(weather_panel$precip_5yr_avg[weather_panel$year < min(years) + 4L])),
+  all(is.na(weather_panel$pdsi_march_date) |
+      month(weather_panel$pdsi_march_date) == 3L)
+)
+
 message("Missing values:")
 print(
   weather_panel %>%
     summarise(
-      missing_maxtemp = sum(is.na(maxtemp)),
-      missing_pdsi    = sum(is.na(pdsi)),
-      missing_precip  = sum(is.na(precip))
+      across(
+        c(maxtemp, pdsi, precip,
+          maxtemp_5yr_avg, pdsi_5yr_avg, precip_5yr_avg,
+          pdsi_march_final),
+        ~ sum(is.na(.x)),
+        .names = "missing_{.col}"
+      )
     )
 )
 
 
 # ------------------------------------------------------------------------------
-# 10. Export CSV
+# 11. Export CSV
 # ------------------------------------------------------------------------------
 
 dir.create(
@@ -475,5 +724,12 @@ write.csv(
   row.names = FALSE
 )
 
+write.csv(
+  county_coverage,
+  coverage_file,
+  row.names = FALSE
+)
+
 message("Done.")
-message("Output saved to: ", output_file)
+message("Weather panel saved to: ", output_file)
+message("County cropland coverage saved to: ", coverage_file)
