@@ -1,6 +1,20 @@
-import delimited "${datapath}paneled_weather_2000_2020.csv", clear
+* Starting with weather data
+import delimited "${datapath}paneled_weather_cropland_2000_2020.csv", clear
 
-	destring maxtemp pdsi precip, replace force
+	destring maxtemp pdsi precip maxtemp_5yr_avg pdsi_5yr_avg ///
+		precip_5yr_avg pdsi_march_final, replace force
+	
+preserve
+	import delimited "${datapath}paneled_gdd_cropland_2000_2020.csv", clear
+	
+	destring gdd gdd_5yr_avg, replace force
+	
+	save "${datapath}gdd_panel", replace
+restore
+
+	merge 1:1 fips year using "${datapath}gdd_panel"
+		drop if _merge == 2
+		drop _merge
 	
 	************ Include Ogallala Aquifer shares ******************
 	
@@ -123,7 +137,10 @@ by fips: gen maxtemp_lag1 = maxtemp[_n-1]
 		la var maxtemp_lag1 "Max. Temperature One-Year Lag"
 		
 by fips: gen precip_lag1 = precip[_n-1]
-		la var precip_lag1 "Precipitation One-Year Lag"		
+		la var precip_lag1 "Precipitation One-Year Lag"	
+		
+by fips: gen gdd_lag1 = gdd[_n-1]
+		la var gdd_lag1 "Growing Degree Days One-Year Lag"	
 		
 *** Merging in "mean saturated thickness" of Ogallala by county
 
