@@ -1,11 +1,12 @@
 ********************************************************************************
-* Matched county-year DiD regressions -- tables 2, 2B, 3, 4, 4B, 4C, 5
+* Matched county-year DiD regressions -- UPDATED WEATHER CONTROLS
+* Tables 2, 2B, 3, 4, 4B, 4C, 5
 *
 * Reads outcome variables already created in 002 process_data.do.
 * No dependent variables are generated, replaced, renamed, or rescaled here.
 *
 * Matching: pre-insurance / groundwater / joint matching (1:1 logit PSM)
-* Estimation: reghdfe with county FE, state-by-year FE, clustered by county
+* Estimation: reghdfe with county FE, state-specific linear trends, clustered by county
 * Estimates three specifications per outcome; exports full-control spec (1).
 ********************************************************************************
 version 18.0
@@ -13,8 +14,8 @@ clear all
 set more off
 
 local match_nn 1
-global DIDPSM_OUTDIR "${estpath}oct21_2026/DiD"
-cap mkdir "${estpath}oct21_2026"
+global DIDPSM_OUTDIR "${estpath}nov8_2026/DiD"
+cap mkdir "${estpath}nov8_2026"
 cap mkdir "$DIDPSM_OUTDIR"
 
 foreach package in reghdfe ftools psmatch2 estout avar {
@@ -27,6 +28,70 @@ foreach package in reghdfe ftools psmatch2 estout avar {
 ********************************************************************************
 use "${datapath}nrd_data_cleaned", clear
 keep if ogal_share >= 0.01
+
+* Weather measures requested for this variant:
+*   precip_lag1 precip_5yr_avg maxtemp_lag1 maxtemp_5yr_avg
+*   pdsi_march_final pdsi_5yr_avg gdd gdd_5yr_avg
+*
+* Lagged variables are expected to exist in nrd_data_cleaned, as in 004_01.
+* Any missing newly extracted measures are imported from the two county-year
+* CSVs produced by 001_01 and 001_02. Existing variables are not overwritten.
+* Paths below are relative to the project working directory.
+local weather_csv "data/processed data/paneled_weather_cropland_2000_2020.csv"
+local gdd_csv     "data/processed data/paneled_gdd_cropland_2000_2020.csv"
+
+* Match FIPS storage type to the master panel when importing CSV files.
+local fips_is_numeric 0
+capture confirm numeric variable fips
+if !_rc local fips_is_numeric 1
+
+tempfile panel_before_weather
+
+local missing_weather ""
+foreach v in precip_5yr_avg maxtemp_5yr_avg pdsi_march_final pdsi_5yr_avg {
+    capture confirm variable `v'
+    if _rc local missing_weather "`missing_weather' `v'"
+}
+if "`missing_weather'" != "" {
+    confirm file "`weather_csv'"
+    save `panel_before_weather', replace
+    import delimited using "`weather_csv'", clear varnames(1) stringcols(1)
+    if `fips_is_numeric' destring fips, replace
+    capture confirm numeric variable year
+    if _rc destring year, replace
+    keep fips year `missing_weather'
+    isid fips year
+    tempfile imported_weather
+    save `imported_weather', replace
+    use `panel_before_weather', clear
+    merge m:1 fips year using `imported_weather', keep(master match) nogen
+}
+
+local missing_gdd ""
+foreach v in gdd gdd_5yr_avg {
+    capture confirm variable `v'
+    if _rc local missing_gdd "`missing_gdd' `v'"
+}
+if "`missing_gdd'" != "" {
+    confirm file "`gdd_csv'"
+    save `panel_before_weather', replace
+    import delimited using "`gdd_csv'", clear varnames(1) stringcols(1)
+    if `fips_is_numeric' destring fips, replace
+    capture confirm numeric variable year
+    if _rc destring year, replace
+    keep fips year `missing_gdd'
+    isid fips year
+    tempfile imported_gdd
+    save `imported_gdd', replace
+    use `panel_before_weather', clear
+    merge m:1 fips year using `imported_gdd', keep(master match) nogen
+}
+
+* Fail with a meaningful message if the requested weather variables are absent.
+foreach v in precip_lag1 precip_5yr_avg maxtemp_lag1 maxtemp_5yr_avg ///
+             pdsi_march_final pdsi_5yr_avg gdd gdd_5yr_avg {
+    confirm numeric variable `v'
+}
 
 * Fail early if a required processed outcome is absent. Missing outcomes must
 * be produced in the processing script, not re-created in the regression script.
@@ -47,8 +112,10 @@ foreach v of local outcome_vars {
 ********************************************************************************
 * 2. Controls from original county-year setup
 ********************************************************************************
-local controls_irr_corn_ac allocation drill_mor irr_acres_mor precip_lag1 maxtemp_lag1 pdsi sat_thick sat_thick_sq i.state_fips##year
-local controls_irr_corn_no_st allocation drill_mor irr_acres_mor precip_lag1 maxtemp_lag1 pdsi i.state_fips##year
+local weather_controls precip_lag1 precip_5yr_avg maxtemp_lag1 maxtemp_5yr_avg ///
+    pdsi_march_final pdsi_5yr_avg gdd_lag1 gdd_5yr_avg
+local controls_irr_corn_ac allocation drill_mor irr_acres_mor `weather_controls' sat_thick sat_thick_sq i.state_fips##year
+local controls_irr_corn_no_st allocation drill_mor irr_acres_mor `weather_controls' i.state_fips##year
 
 global controls_irr_corn_ac `controls_irr_corn_ac'
 global controls_irr_corn_no_st `controls_irr_corn_no_st'
@@ -163,7 +230,7 @@ program define export_didpsm_table
         cells(b(fmt(3) star) se(fmt(3) par)) ///
         stats(N r2, fmt(%9.0fc 3) labels(`"Observations"' `"R-Squared"')) ///
         addnotes("Standard errors clustered at the county level in parentheses." ///
-                 "Includes county fixed effects and state-by-year fixed effects." ///
+                 "Includes county fixed effects and state-specific linear trends." ///
                  "Matching algorithm: `matchlab'.") ///
         substitute({table} {sidewaystable})
 end

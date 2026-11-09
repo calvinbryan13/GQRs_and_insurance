@@ -1,5 +1,5 @@
 ********************************************************************************
-* CALLAWAY-SANT'ANNA ESTIMATION, 2026-10-21
+* CALLAWAY-SANT'ANNA ESTIMATION, 2026-11-08 (UPDATED WEATHER CONTROLS)
 * Uses 002 process_data outcomes without constructing or rescaling them.
 * Tables: 2, 2B, 3, 4, 4B, 4C, 5
 * PSM: preinsurance, groundwater, combined; 1:1 logit NN without replacement
@@ -15,12 +15,12 @@ local preL -5
 local postL 10
 local match_nn 1
 
-global CS_ESTDIR "${estpath}oct21_2026/CS"
-global CS_FIGDIR "${figpath}oct21_2026/CS"
-cap mkdir "${estpath}oct21_2026"
+global CS_ESTDIR "${estpath}nov8_2026/CS"
+global CS_FIGDIR "${figpath}nov8_2026/CS"
+cap mkdir "${estpath}nov8_2026"
 cap mkdir "$CS_ESTDIR"
-cap mkdir "${figpath}oct21_2026"
-cap mkdir "${figpath}oct21_2026/CS"
+cap mkdir "${figpath}nov8_2026"
+cap mkdir "${figpath}nov8_2026/CS"
 cap mkdir "$CS_FIGDIR"
 
 foreach package in csdid psmatch2 drdid {
@@ -31,6 +31,11 @@ foreach package in csdid psmatch2 drdid {
 use "${datapath}nrd_data_cleaned", clear
 keep if ogal_share >= 0.01
 drop if allocation > 0 & allocation < 0.25
+
+* Weather measures requested for this variant:
+*   precip_lag1 precip_5yr_avg maxtemp_lag1 maxtemp_5yr_avg
+*   pdsi_march_final pdsi_5yr_avg gdd gdd_5yr_avg
+
 
 * Fail early rather than silently regenerating missing dependent variables.
 local outcomes ///
@@ -47,10 +52,13 @@ foreach v of local outcomes {
 }
 confirm numeric variable `gvar'
 
-* Covariates exactly as in the uploaded CS program (without i.fips/i.year).
+* Updated weather controls, matching 004_01B DiD (without DiD-only FE/trends).
+* csdid handles its own group-time comparisons; no i.fips/i.year terms.
 global controls_irr_corn_ac ///
-    drill_mor irr_acres_mor precip_lag1 maxtemp_lag1 ///
-    pdsi sat_thick sat_thick_sq
+    drill_mor irr_acres_mor ///
+    precip_lag1 precip_5yr_avg maxtemp_lag1 maxtemp_5yr_avg ///
+    pdsi_march_final pdsi_5yr_avg gdd_lag1 gdd_5yr_avg ///
+    sat_thick sat_thick_sq
 global psm_gvar `gvar'
 global psm_preL `preL'
 global psm_postL `postL'
@@ -249,7 +257,10 @@ program define cs_run_tables
             file write `fh' "Treatment cohort: cs_did2. Matched sample: `matchlab'. "
             file write `fh' "Comparison group: `design'. "
             file write `fh' "Controls: drilling, irrigated acres, lagged precipitation, "
-            file write `fh' "lagged maximum temperature, PDSI, saturated thickness, and its square. "
+            file write `fh' "five-year precipitation, lagged maximum temperature, "
+            file write `fh' "five-year maximum temperature, end-of-March PDSI, "
+            file write `fh' "five-year PDSI, annual GDD, five-year GDD, "
+            file write `fh' "saturated thickness, and its square. "
             file write `fh' "*** p<0.01, ** p<0.05, * p<0.10." _n
             file write `fh' "\end{minipage}" _n "\end{table}" _n
             file close `fh'

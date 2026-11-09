@@ -7,7 +7,7 @@
 * Both specifications are estimated: nocontrols and controls.
 * Outcomes are READ from the processing script; never recreated or rescaled.
 *
-* Tables and run logs: ${estpath}oct21_2026/CDH/
+* Tables and run logs: ${estpath}nov8_2026/CDH/
 * Figure exports are not included: the source uses graph_off and does not
 * estimate a dynamic event-study specification.
 ********************************************************************************
@@ -16,7 +16,11 @@ clear all
 set more off
 local match_nn 1
 local treatvar allocation
-local cdh_controls drill_mor irr_acres_mor precip_lag1 maxtemp_lag1 pdsi sat_thick sat_thick_sq
+* Retain nonweather controls and replace weather controls with the eight requested measures.
+local cdh_controls drill_mor irr_acres_mor ///
+    precip_lag1 precip_5yr_avg maxtemp_lag1 maxtemp_5yr_avg ///
+    pdsi_march_final pdsi_5yr_avg gdd_lag1 gdd_5yr_avg ///
+    sat_thick sat_thick_sq
 local cdh_outcomes ///
     irr_corn_ln_ins_acres irr_corn_ln_yield irr_corn_cov_level ///
     irr_corn_ins_acres irr_corn_yield ///
@@ -27,8 +31,8 @@ local cdh_outcomes ///
     irr_corn_prod irr_corn_ln_prod irr_corn_prod_per_ins_acre ///
     irr_corn_prod_ppa irr_corn_ins_minus_harv irr_corn_plant_minus_harv
 
-global CDH_OUTDIR "${estpath}oct21_2026/CDH"
-capture mkdir "${estpath}oct21_2026"
+global CDH_OUTDIR "${estpath}nov8_2026/CDH"
+capture mkdir "${estpath}nov8_2026"
 capture mkdir "$CDH_OUTDIR"
 
 capture which psmatch2
@@ -43,7 +47,9 @@ if _rc {
 * 1. Load outcomes processed in 002 process_data.do
 ********************************************************************************
 use "${datapath}nrd_data_cleaned", clear
+
 keep if ogal_share >= 0.01
+
 foreach v of local cdh_outcomes {
     confirm numeric variable `v'
 }

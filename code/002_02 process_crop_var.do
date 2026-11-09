@@ -137,7 +137,7 @@ import delimited "${rawpath}NASS_soybean_yield.csv", clear
 		
 	gen fips = (state_fips * 1000) + county_fips
 	
-	collapse (sum) sb_yield, by(fips year)
+	collapse (mean) sb_yield, by(fips year)
 
 * Calculating the 10-year variance in county yield
 	xtset fips year
@@ -174,7 +174,7 @@ import delimited "${rawpath}irr_sb_yield.csv", clear
 		
 	gen fips = (state_fips * 1000) + county_fips
 	
-	collapse (sum) irr_sb_yield, by(fips year)
+	collapse (mean) irr_sb_yield, by(fips year)
 
 * Calculating the 10-year variance in county yield
 	xtset fips year
@@ -229,7 +229,7 @@ import delimited "${rawpath}NASS_sorghum_yield.csv", clear
 		
 	gen fips = (state_fips * 1000) + county_fips
 	
-	collapse (sum) sorghum_yield, by(fips year)
+	collapse (mean) sorghum_yield, by(fips year)
 
 * Calculating the 10-year variance in county yield
 	xtset fips year
@@ -266,7 +266,7 @@ import delimited "${rawpath}irr_sorghum_yield.csv", clear
 		
 	gen fips = (state_fips * 1000) + county_fips
 	
-	collapse (sum) irr_sorghum_yield, by(fips year)
+	collapse (mean) irr_sorghum_yield, by(fips year)
 	
 * Calculating the 10-year variance in county yield
 	xtset fips year
