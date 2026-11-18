@@ -1,43 +1,27 @@
-# ==============================================================================
-# 001_01_extract_weather_cropland_5yr_march.R
+# ============================================================================== 
+# 001_01B_extract_weather_cropland_prior5_pdsi_bins.R
 #
-# Purpose:
-#   Create a county-year AGRICULTURAL-LAND weather panel for 2000-2020:
-#     1. Mean annual maximum temperature
-#     2. Mean annual PDSI
-#     3. Total annual precipitation
-#     4. Trailing 5-year means of each of the three annual measures
-#     5. PDSI from the final observation dated in March of each year
-#        (also records the actual March observation date)
+# County-cropland weather panel, 2000-2020, with 1995-1999 history.
+# Read annual weather and PDSI layers for 1995-2020, compute prior-five-year
+# (t-5 through t-1) annual weather means and PDSI category counts, and retain
+# years 2000-2020 in the final output.
 #
-# Added panel columns: maxtemp_5yr_avg, pdsi_5yr_avg, precip_5yr_avg,
-#                      pdsi_march_final, pdsi_march_date.
+# Each year: annual PDSI = mean of all dated PDSI observations in that year.
+# March PDSI = LAST observed PDSI layer dated in March (not a March mean).
 #
-# A 5-year mean for year Y uses Y-4, ..., Y (inclusive). It is NA if
-# any of those five annual values are missing. Thus 2000-2003 have
-# NA 5-year averages with the current 2000-2020 input period.
+# Five exclusive PDSI categories (endpoints assigned unambiguously):
+#   lt_neg3:       x < -3
+#   neg3_to_neg1: -3 <= x < -1
+#   neg1_to_1:    -1 <= x <= 1
+#   pos1_to_3:     1 < x <= 3
+#   gt_3:         x > 3
 #
-# Raw weather data are stored in:
-#   data/raw_data/maxtemp/
-#   data/raw_data/pdsi/
-#   data/raw_data/precip/
-#
-# Expected files:
-#   maxtemp/tmmx_YYYY.nc
-#   precip/pr_YYYY.nc
-#   pdsi/           one NetCDF file containing the full PDSI time series
-#
-# Spatial extraction uses each county's intersection with cropland_area.shp,
-# not the full county. The intersection is calculated once and reused for all
-# years and weather variables. exact_extract(..., "mean") weights cells by the
-# fraction of each weather-grid cell covered by the county's cropland mask,
-# consistent with the original script.
-#
-# Counties with no mapped cropland remain in the panel with NA weather values.
-# This static cropland mask is applied to every year (2000-2020).
-# The last-March PDSI is taken from the latest PDSI layer whose timestamp
-# falls in March, NOT from a calendar-month mean or March 31 interpolation.
-# ==============================================================================
+# March indicators are 0/1; missing March PDSI => all five NA.
+# Prior-five-year counts are integers from 0 through 5; zero is a valid count.
+# If any annual PDSI in the five-year window is missing, all counts are NA.
+# A full five-year history is required for means and counts.
+# County-year rows without mapped cropland have NA weather measures.
+# ============================================================================== 
 
 
 # ------------------------------------------------------------------------------
@@ -77,7 +61,9 @@ cropland_file <- "data/map data/cropland_area_usgs.shp"
 output_file   <- "data/processed data/paneled_weather_cropland_2000_2020.csv"
 coverage_file <- "data/processed data/county_cropland_coverage.csv"
 
-years <- 2000:2020
+history_years <- 1995:2020
+output_years  <- 2000:2020
+years <- history_years
 
 
 # ------------------------------------------------------------------------------
@@ -521,11 +507,11 @@ pdsi_dates <- get_netcdf_dates(
   r = pdsi_r
 )
 
-# Keep only 2000-2020.
+# Read 1995-2020 so 2000 has complete prior-five-year history.
 keep_layers <- which(year(pdsi_dates) %in% years)
 
 if (length(keep_layers) == 0) {
-  stop("No PDSI raster layers were found for 2000-2020.")
+  stop("No PDSI raster layers were found for 1995-2020.")
 }
 
 pdsi_r <- pdsi_r[[keep_layers]]
@@ -586,7 +572,7 @@ pdsi_march_last_layers <- pdsi_layer_lookup %>%
   slice_tail(n = 1) %>%
   ungroup()
 
-missing_march_years <- setdiff(years, pdsi_march_last_layers$year)
+missing_march_years <- setdiff(output_years, pdsi_march_last_layers$year)
 if (length(missing_march_years) > 0L) {
   warning(
     "No PDSI observation dated in March for year(s): ",
@@ -625,33 +611,74 @@ weather_panel <- maxtemp_annual %>%
 
 
 # ------------------------------------------------------------------------------
-# 9. Trailing 5-year means of the annual cropland weather measures
+# 9. Prior-five-year weather averages and PDSI categories/counts
 # ------------------------------------------------------------------------------
 
-# Uses the current year and preceding four calendar years (e.g., the
-# 2010 value averages 2006-2010). No partial windows are calculated.
-# stats::filter propagates NA when even one year in the window is missing.
-# These are averages of ANNUAL values: the precipitation version is the
-# average annual precipitation total across five years, not a five-year sum.
-rolling_five_year_mean <- function(x) {
-  as.numeric(stats::filter(x, filter = rep(1 / 5, 5), sides = 1))
+# For year t, use t-5,...,t-1. The lag excludes current-year values.
+# filter returns NA for incomplete windows or missing historical values.
+prior_five_mean <- function(x) {
+  as.numeric(stats::filter(dplyr::lag(x, 1),
+                           filter = rep(1 / 5, 5), sides = 1))
 }
 
-message("Calculating trailing 5-year weather averages...")
+# Return integer bin IDs 1,...,5, or NA when PDSI itself is NA.
+# The interval endpoints follow the categories documented at the top.
+pdsi_bin <- function(x) {
+  dplyr::case_when(
+    is.na(x)           ~ NA_integer_,
+    x < -3             ~ 1L,
+    x < -1             ~ 2L,
+    x <= 1             ~ 3L,
+    x <= 3             ~ 4L,
+    TRUE               ~ 5L
+  )
+}
+
+# Number of years among t-5,...,t-1 in the indicated annual-PDSI bin.
+# NA propagates if any historical annual PDSI is missing.
+prior_five_bin_count <- function(bin_ids, bin_id) {
+  as.integer(stats::filter(
+    dplyr::lag(as.integer(bin_ids == bin_id), 1),
+    filter = rep(1, 5), sides = 1
+  ))
+}
+
+message("Calculating previous-five-year weather means and PDSI bins...")
 
 weather_panel <- weather_panel %>%
   group_by(fips) %>%
   arrange(year, .by_group = TRUE) %>%
   mutate(
-    maxtemp_5yr_avg = rolling_five_year_mean(maxtemp),
-    pdsi_5yr_avg    = rolling_five_year_mean(pdsi),
-    precip_5yr_avg  = rolling_five_year_mean(precip)
+    maxtemp_5yr_avg = prior_five_mean(maxtemp),
+    pdsi_5yr_avg    = prior_five_mean(pdsi),
+    precip_5yr_avg  = prior_five_mean(precip),
+
+    # Bins for the final March PDSI observation of THIS year.
+    .march_bin = pdsi_bin(pdsi_march_final),
+    pdsi_march_lt_neg3      = as.integer(.march_bin == 1L),
+    pdsi_march_neg3_to_neg1 = as.integer(.march_bin == 2L),
+    pdsi_march_neg1_to_1    = as.integer(.march_bin == 3L),
+    pdsi_march_pos1_to_3    = as.integer(.march_bin == 4L),
+    pdsi_march_gt_3         = as.integer(.march_bin == 5L),
+
+    # Counts use ANNUAL mean PDSI for the preceding five years, never March.
+    .annual_bin = pdsi_bin(pdsi),
+    pdsi_prev5_n_lt_neg3      = prior_five_bin_count(.annual_bin, 1L),
+    pdsi_prev5_n_neg3_to_neg1 = prior_five_bin_count(.annual_bin, 2L),
+    pdsi_prev5_n_neg1_to_1    = prior_five_bin_count(.annual_bin, 3L),
+    pdsi_prev5_n_pos1_to_3    = prior_five_bin_count(.annual_bin, 4L),
+    pdsi_prev5_n_gt_3         = prior_five_bin_count(.annual_bin, 5L)
   ) %>%
   ungroup() %>%
+  filter(year %in% output_years) %>%
   select(
     fips, year, maxtemp, pdsi, precip,
     maxtemp_5yr_avg, pdsi_5yr_avg, precip_5yr_avg,
-    pdsi_march_final, pdsi_march_date
+    pdsi_march_final, pdsi_march_date,
+    pdsi_march_lt_neg3, pdsi_march_neg3_to_neg1, pdsi_march_neg1_to_1,
+    pdsi_march_pos1_to_3, pdsi_march_gt_3,
+    pdsi_prev5_n_lt_neg3, pdsi_prev5_n_neg3_to_neg1,
+    pdsi_prev5_n_neg1_to_1, pdsi_prev5_n_pos1_to_3, pdsi_prev5_n_gt_3
   ) %>%
   arrange(fips, year)
 
@@ -676,21 +703,46 @@ message("Number of counties: ",
 message("Number of county-year observations: ",
         nrow(weather_panel))
 
-# Same one-row-per-county-per-year structure as the original script.
+# Preserve the original 2000-2020 county-year panel despite loading 1995 history.
+march_columns <- c(
+  "pdsi_march_lt_neg3", "pdsi_march_neg3_to_neg1", "pdsi_march_neg1_to_1",
+  "pdsi_march_pos1_to_3", "pdsi_march_gt_3"
+)
+count_columns <- c(
+  "pdsi_prev5_n_lt_neg3", "pdsi_prev5_n_neg3_to_neg1",
+  "pdsi_prev5_n_neg1_to_1", "pdsi_prev5_n_pos1_to_3",
+  "pdsi_prev5_n_gt_3"
+)
+expected_columns <- c(
+  "fips", "year", "maxtemp", "pdsi", "precip",
+  "maxtemp_5yr_avg", "pdsi_5yr_avg", "precip_5yr_avg",
+  "pdsi_march_final", "pdsi_march_date", march_columns, count_columns
+)
+
 stopifnot(
-  nrow(weather_panel) == nrow(counties) * length(years),
+  nrow(weather_panel) == nrow(counties) * length(output_years),
   !anyDuplicated(weather_panel[c("fips", "year")]),
-  all(names(weather_panel) == c(
-    "fips", "year", "maxtemp", "pdsi", "precip",
-    "maxtemp_5yr_avg", "pdsi_5yr_avg", "precip_5yr_avg",
-    "pdsi_march_final", "pdsi_march_date"
-  )),
-  all(weather_panel$year %in% years),
-  all(is.na(weather_panel$maxtemp_5yr_avg[weather_panel$year < min(years) + 4L])),
-  all(is.na(weather_panel$pdsi_5yr_avg[weather_panel$year < min(years) + 4L])),
-  all(is.na(weather_panel$precip_5yr_avg[weather_panel$year < min(years) + 4L])),
+  identical(names(weather_panel), expected_columns),
+  all(weather_panel$year %in% output_years),
   all(is.na(weather_panel$pdsi_march_date) |
       month(weather_panel$pdsi_march_date) == 3L)
+)
+
+# When March PDSI exists exactly one March flag is 1; otherwise all are NA.
+march_matrix <- as.matrix(weather_panel[, march_columns])
+valid_march <- !is.na(weather_panel$pdsi_march_final)
+stopifnot(
+  all(rowSums(march_matrix[valid_march, , drop = FALSE]) == 1),
+  all(is.na(march_matrix[!valid_march, , drop = FALSE]))
+)
+
+# Complete prior-five-year histories have five category assignments in total.
+# Incomplete histories have five missing category counts (not spurious zeros).
+count_matrix <- as.matrix(weather_panel[, count_columns])
+complete_history <- !is.na(weather_panel$pdsi_5yr_avg)
+stopifnot(
+  all(rowSums(count_matrix[complete_history, , drop = FALSE]) == 5),
+  all(is.na(count_matrix[!complete_history, , drop = FALSE]))
 )
 
 message("Missing values:")
@@ -700,7 +752,7 @@ print(
       across(
         c(maxtemp, pdsi, precip,
           maxtemp_5yr_avg, pdsi_5yr_avg, precip_5yr_avg,
-          pdsi_march_final),
+          pdsi_march_final, all_of(march_columns), all_of(count_columns)),
         ~ sum(is.na(.x)),
         .names = "missing_{.col}"
       )

@@ -1,9 +1,10 @@
 # ==============================================================================
-# 001_01B_extract_gdd_cropland.R
+# 001_02B_extract_gdd_cropland_prior5.R
 #
 # Purpose:
 #   Create county-year growing degree days (GDD) over agricultural land,
-#   2000-2020, with a trailing 5-year average.
+#   1995-2020, with a prior (excluding current year) 5-year average.
+#   Export county-year results for 2000-2020 only.
 #
 # Definition (the SAME for corn, soybean, and sorghum):
 #   daily GDD in degrees Fahrenheit =
@@ -18,9 +19,10 @@
 # growing-season restriction is applied.
 #
 # 5-year variable:
-#   gdd_5yr_avg for year Y = average of annual gdd for Y-4,...,Y.
-#   Missing if any of the 5 annual values are missing. With years 2000-2020,
-#   gdd_5yr_avg is missing for 2000-2003.
+#   gdd_5yr_avg for year Y = average of annual gdd for Y-5,...,Y-1.
+#   Missing if any of the 5 prior annual values are missing. Processing
+#   1995-2020 gives a complete historical window for output year 2000,
+#   provided all 1995-1999 source files and observations are available.
 #
 # Input locations:
 #   Tmax: external causal_drop_effectiveness/data/raw_data/maxtemp/tmmx_YYYY.nc
@@ -29,7 +31,7 @@
 #   Cropland:          data/map data/cropland_area_usgs.shp
 #
 # Output:
-#   data/processed data/paneled_gdd_cropland_2000_2020.csv
+#   data/processed data/paneled_gdd_cropland_prior5_2000_2020.csv
 #   Columns: fips, year, gdd, gdd_5yr_avg
 #
 # Input temperature unit metadata must be Kelvin, Celsius, or Fahrenheit.
@@ -73,7 +75,8 @@ cropland_file <- "data/map data/cropland_area_usgs.shp"
 output_file   <- "data/processed data/paneled_gdd_cropland_2000_2020.csv"
 coverage_file <- "data/processed data/county_cropland_coverage_usgs.csv"
 
-years <- 2000:2020
+years <- 1995:2020
+output_years <- 2000:2020
 base_temp_f <- 50
 
 # Date handling: true means that a file containing exactly 365/366 consecutive
@@ -544,19 +547,23 @@ gdd_panel <- bind_rows(annual_list) %>%
   arrange(fips, year)
 
 # ------------------------------------------------------------------------------
-# 6. Trailing 5-year mean, current year + preceding 4 years
+# 6. Prior 5-year mean: preceding five years, excluding current year
 # ------------------------------------------------------------------------------
 
-# stats::filter propagates NA when any of the 5 annual measures are missing.
-rolling_five_year_mean <- function(x) {
-  as.numeric(stats::filter(x, filter = rep(1 / 5, 5), sides = 1))
+# Calculate using the full 1995-2020 history BEFORE restricting to 2000-2020.
+# A year Y uses annual GDD from Y-5 through Y-1, each weighted equally.
+# stats::filter produces NA if any of those five annual values is unavailable.
+rolling_prior_five_year_mean <- function(x) {
+  as.numeric(stats::filter(dplyr::lag(x, n = 1L),
+                           filter = rep(1 / 5, 5), sides = 1))
 }
 
 gdd_panel <- gdd_panel %>%
   group_by(fips) %>%
   arrange(year, .by_group = TRUE) %>%
-  mutate(gdd_5yr_avg = rolling_five_year_mean(gdd)) %>%
+  mutate(gdd_5yr_avg = rolling_prior_five_year_mean(gdd)) %>%
   ungroup() %>%
+  filter(year %in% output_years) %>%
   select(fips, year, gdd, gdd_5yr_avg) %>%
   arrange(fips, year)
 
@@ -565,18 +572,18 @@ gdd_panel <- gdd_panel %>%
 # ------------------------------------------------------------------------------
 
 stopifnot(
-  nrow(gdd_panel) == nrow(counties) * length(years),
+  nrow(gdd_panel) == nrow(counties) * length(output_years),
   !anyDuplicated(gdd_panel[c("fips", "year")]),
   all(names(gdd_panel) == c("fips", "year", "gdd", "gdd_5yr_avg")),
   all(is.na(gdd_panel$gdd) | gdd_panel$gdd >= 0),
   all(is.na(gdd_panel$gdd_5yr_avg) | gdd_panel$gdd_5yr_avg >= 0),
-  all(is.na(gdd_panel$gdd_5yr_avg[gdd_panel$year < min(years) + 4L]))
+  all(gdd_panel$year %in% output_years)
 )
 
 message("County-year rows: ", nrow(gdd_panel))
 message("Unique counties: ", n_distinct(gdd_panel$fips))
 message("Missing annual GDD values: ", sum(is.na(gdd_panel$gdd)))
-message("Missing 5-year average GDD values: ", sum(is.na(gdd_panel$gdd_5yr_avg)))
+message("Missing prior 5-year average GDD values: ", sum(is.na(gdd_panel$gdd_5yr_avg)))
 print(head(gdd_panel))
 
 dir.create(dirname(output_file), recursive = TRUE, showWarnings = FALSE)
