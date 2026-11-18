@@ -1,6 +1,6 @@
 ********************************************************************************
 * Matched county-year DiD regressions -- UPDATED WEATHER CONTROLS
-* Tables 2, 2B, 3, 4, 4B, 4C, 5
+* Tables 2, 2B, 3, 4, 4B, 4C
 *
 * Reads outcome variables already created in 002 process_data.do.
 * No dependent variables are generated, replaced, renamed, or rescaled here.
@@ -8,15 +8,24 @@
 * Matching: pre-insurance / groundwater / joint matching (1:1 logit PSM)
 * Estimation: reghdfe with county FE, state-specific linear trends, clustered by county
 * Estimates three specifications per outcome; exports full-control spec (1).
+* Common complete-case sample for Tables 2-4C; yield exempt.
+* PDSI controls: March bins and previous-5-full-year bin counts (neutral reference).
+* Table 5 is not estimated and its outcome variables do not restrict the sample.
+* Verify identical effective reghdfe samples for all non-yield models.
 ********************************************************************************
 version 18.0
 clear all
 set more off
 
 local match_nn 1
-global DIDPSM_OUTDIR "${estpath}nov8_2026/DiD"
-cap mkdir "${estpath}nov8_2026"
+global DIDPSM_OUTDIR "${estpath}nov19_2026/DiD"
+cap mkdir "${estpath}nov19_2026"
 cap mkdir "$DIDPSM_OUTDIR"
+
+* Remove any Table 5 LaTeX files left by earlier versions of this do-file.
+foreach match in psm_preinsurance psm_groundwater psm_both {
+    capture erase "$DIDPSM_OUTDIR/DID_table5_`match'.tex"
+}
 
 foreach package in reghdfe ftools psmatch2 estout avar {
     capture which `package'
@@ -29,81 +38,16 @@ foreach package in reghdfe ftools psmatch2 estout avar {
 use "${datapath}nrd_data_cleaned", clear
 keep if ogal_share >= 0.01
 
-* Weather measures requested for this variant:
-*   precip_lag1 precip_5yr_avg maxtemp_lag1 maxtemp_5yr_avg
-*   pdsi_march_final pdsi_5yr_avg gdd gdd_5yr_avg
-*
-* Lagged variables are expected to exist in nrd_data_cleaned, as in 004_01.
-* Any missing newly extracted measures are imported from the two county-year
-* CSVs produced by 001_01 and 001_02. Existing variables are not overwritten.
-* Paths below are relative to the project working directory.
-local weather_csv "data/processed data/paneled_weather_cropland_2000_2020.csv"
-local gdd_csv     "data/processed data/paneled_gdd_cropland_2000_2020.csv"
-
-* Match FIPS storage type to the master panel when importing CSV files.
-local fips_is_numeric 0
-capture confirm numeric variable fips
-if !_rc local fips_is_numeric 1
-
-tempfile panel_before_weather
-
-local missing_weather ""
-foreach v in precip_5yr_avg maxtemp_5yr_avg pdsi_march_final pdsi_5yr_avg {
-    capture confirm variable `v'
-    if _rc local missing_weather "`missing_weather' `v'"
-}
-if "`missing_weather'" != "" {
-    confirm file "`weather_csv'"
-    save `panel_before_weather', replace
-    import delimited using "`weather_csv'", clear varnames(1) stringcols(1)
-    if `fips_is_numeric' destring fips, replace
-    capture confirm numeric variable year
-    if _rc destring year, replace
-    keep fips year `missing_weather'
-    isid fips year
-    tempfile imported_weather
-    save `imported_weather', replace
-    use `panel_before_weather', clear
-    merge m:1 fips year using `imported_weather', keep(master match) nogen
-}
-
-local missing_gdd ""
-foreach v in gdd gdd_5yr_avg {
-    capture confirm variable `v'
-    if _rc local missing_gdd "`missing_gdd' `v'"
-}
-if "`missing_gdd'" != "" {
-    confirm file "`gdd_csv'"
-    save `panel_before_weather', replace
-    import delimited using "`gdd_csv'", clear varnames(1) stringcols(1)
-    if `fips_is_numeric' destring fips, replace
-    capture confirm numeric variable year
-    if _rc destring year, replace
-    keep fips year `missing_gdd'
-    isid fips year
-    tempfile imported_gdd
-    save `imported_gdd', replace
-    use `panel_before_weather', clear
-    merge m:1 fips year using `imported_gdd', keep(master match) nogen
-}
-
-* Fail with a meaningful message if the requested weather variables are absent.
-foreach v in precip_lag1 precip_5yr_avg maxtemp_lag1 maxtemp_5yr_avg ///
-             pdsi_march_final pdsi_5yr_avg gdd gdd_5yr_avg {
-    confirm numeric variable `v'
-}
 
 * Fail early if a required processed outcome is absent. Missing outcomes must
 * be produced in the processing script, not re-created in the regression script.
 local outcome_vars ///
     irr_corn_ln_ins_acres irr_corn_ln_yield irr_corn_cov_level ///
-    irr_corn_ins_acres irr_corn_yield ///
+    irr_corn_ins_acres irr_corn_yield irr_corn_ln_liab irr_corn_liab ///
     irr_corn_mean_rp irr_corn_cpl irr_corn_ppl irr_corn_spl ///
     irr_corn_total_cost irr_corn_prem irr_corn_sub ///
     irr_corn_ln_total_cost irr_corn_ln_prem irr_corn_ln_sub ///
-    irr_corn_cost_pia irr_corn_prem_pia irr_corn_sub_pia ///
-    irr_corn_prod irr_corn_ln_prod irr_corn_prod_per_ins_acre ///
-    irr_corn_prod_ppa irr_corn_ins_minus_harv irr_corn_plant_minus_harv
+    irr_corn_cost_pia irr_corn_prem_pia irr_corn_sub_pia
 
 foreach v of local outcome_vars {
     confirm numeric variable `v'
@@ -112,13 +56,57 @@ foreach v of local outcome_vars {
 ********************************************************************************
 * 2. Controls from original county-year setup
 ********************************************************************************
+* PDSI bins from 001_01B_extract_weather_cropland_prior5_pdsi_bins.R.
+* March bins are five mutually exclusive indicators; omit -1 to 1 as baseline.
+* Historical bins count the preceding five FULL-YEAR PDSI values (not March).
+* Their five counts sum to 5 for complete histories, so omit -1 to 1 as
+* the reference category to avoid perfect collinearity with the intercept.
+* The omitted middle-bin variables remain in the underlying dataset.
+local pdsi_march_controls ///
+    pdsi_march_lt_neg3 pdsi_march_neg3_to_neg1 ///
+    pdsi_march_pos1_to_3 pdsi_march_gt_3
+local pdsi_prior5_controls ///
+    pdsi_prev5_n_lt_neg3 pdsi_prev5_n_neg3_to_neg1 ///
+    pdsi_prev5_n_pos1_to_3 pdsi_prev5_n_gt_3
+
+* Give an explicit error if the revised weather panel has not yet been merged
+* into nrd_data_cleaned by the upstream data-processing do-file.
+foreach v in `pdsi_march_controls' `pdsi_prior5_controls' {
+    capture confirm numeric variable `v'
+    if _rc {
+        display as error "Missing PDSI bin variable: `v'. Merge the revised 001_01B weather panel into nrd_data_cleaned before running this do-file."
+        exit 111
+    }
+}
+
 local weather_controls precip_lag1 precip_5yr_avg maxtemp_lag1 maxtemp_5yr_avg ///
-    pdsi_march_final pdsi_5yr_avg gdd_lag1 gdd_5yr_avg
+    `pdsi_march_controls' `pdsi_prior5_controls' gdd_lag1 gdd_5yr_avg
 local controls_irr_corn_ac allocation drill_mor irr_acres_mor `weather_controls' sat_thick sat_thick_sq i.state_fips##year
 local controls_irr_corn_no_st allocation drill_mor irr_acres_mor `weather_controls' i.state_fips##year
 
 global controls_irr_corn_ac `controls_irr_corn_ac'
 global controls_irr_corn_no_st `controls_irr_corn_no_st'
+
+********************************************************************************
+* 2A. Define common complete-case sample for Tables 2-4C only
+*
+* Table 5 outcomes are deliberately NOT in outcome_vars or the restriction.
+* Yield outcomes are excluded from sample selection, so their N can be lower.
+* Restrict rows AFTER matching, preserving the original matching process.
+********************************************************************************
+local yield_outcomes irr_corn_ln_yield irr_corn_yield
+local main_outcomes : list outcome_vars - yield_outcomes
+local common_regressors allocation drill_mor irr_acres_mor `weather_controls' ///
+    sat_thick sat_thick_sq fips state_fips year
+
+egen byte main_sample_missing = rowmiss(`main_outcomes' `common_regressors')
+gen byte common_sample = (main_sample_missing == 0)
+label var common_sample "Complete data for Tables 2-4C, excluding yields"
+drop main_sample_missing
+
+quietly count if common_sample == 1
+display as text "Tables 2-4C complete-case rows (before matching): " ///
+    as result %12.0fc r(N)
 
 ********************************************************************************
 * 3. Build county-level matching variables
@@ -210,9 +198,51 @@ cap program drop didpsm_reg3
 program define didpsm_reg3
     syntax , DV(string) PREFIX(string)
 
+    * Every non-yield regression must retain exactly the pre-established
+    * post-matching sample. Yield models are allowed to have a smaller N.
+    local is_yield = inlist("`dv'", "irr_corn_ln_yield", "irr_corn_yield")
+
     eststo `prefix'1: reghdfe `dv' $controls_irr_corn_ac, vce(cluster fips) absorb(fips)
+    if !`is_yield' {
+        if e(N) != $DIDPSM_EXPECT_N {
+            di as error "Sample mismatch: `dv' spec 1; N=" e(N) ///
+                "; expected " $DIDPSM_EXPECT_N
+            exit 459
+        }
+        quietly count if !e(sample)
+        if r(N) != 0 {
+            di as error "Sample mismatch: `dv' spec 1 excludes " r(N) " panel rows"
+            exit 459
+        }
+    }
+
     eststo `prefix'2: reghdfe `dv' allocation i.state_fips##year, vce(cluster fips) absorb(fips)
+    if !`is_yield' {
+        if e(N) != $DIDPSM_EXPECT_N {
+            di as error "Sample mismatch: `dv' spec 2; N=" e(N) ///
+                "; expected " $DIDPSM_EXPECT_N
+            exit 459
+        }
+        quietly count if !e(sample)
+        if r(N) != 0 {
+            di as error "Sample mismatch: `dv' spec 2 excludes " r(N) " panel rows"
+            exit 459
+        }
+    }
+
     eststo `prefix'3: reghdfe `dv' $controls_irr_corn_no_st, vce(cluster fips) absorb(fips)
+    if !`is_yield' {
+        if e(N) != $DIDPSM_EXPECT_N {
+            di as error "Sample mismatch: `dv' spec 3; N=" e(N) ///
+                "; expected " $DIDPSM_EXPECT_N
+            exit 459
+        }
+        quietly count if !e(sample)
+        if r(N) != 0 {
+            di as error "Sample mismatch: `dv' spec 3 excludes " r(N) " panel rows"
+            exit 459
+        }
+    }
 end
 
 cap program drop export_didpsm_table
@@ -239,29 +269,44 @@ cap program drop run_didpsm_tables
 program define run_didpsm_tables
     syntax , MATCHSLUG(string) MATCHLAB(string)
 
+    * Lock down the effective sample for this matching design, including
+    * reghdfe's singleton exclusion. The main common flag alone does not
+    * necessarily guarantee the same effective e(sample) in every regression.
+    quietly reghdfe irr_corn_ln_ins_acres $controls_irr_corn_ac, ///
+        vce(cluster fips) absorb(fips)
+    gen byte __common_esample = e(sample)
+    keep if __common_esample == 1
+    drop __common_esample
+    quietly count
+    global DIDPSM_EXPECT_N = r(N)
+    display as text "`matchslug': fixed non-yield sample N = " ///
+        as result %12.0fc $DIDPSM_EXPECT_N
+
     * TABLE 2: Agricultural outcomes: logged acreage and yield, coverage in levels
     eststo clear
     didpsm_reg3, dv(irr_corn_ln_ins_acres) prefix(a)
     didpsm_reg3, dv(irr_corn_ln_yield) prefix(b)
     didpsm_reg3, dv(irr_corn_cov_level) prefix(c)
+    didpsm_reg3, dv(irr_corn_ln_liab) prefix(d)
     export_didpsm_table ///
-        a1 b1 c1, ///
+        a1 b1 c1 d1, ///
         using("$DIDPSM_OUTDIR/DID_table2_`matchslug'.tex") ///
         title("Matched DiD: Agricultural outcomes: logged acreage and yield, coverage in levels") ///
         matchlab("`matchlab'") ///
-        mtitles(`"Ln(Insured acres)"' `"Ln(Yield)"' `"Coverage level"')
+        mtitles(`"Ln(Insured acres)"' `"Ln(Yield)"' `"Coverage level"' `"Ln(Liability)"')
 
     * TABLE 2B: Agricultural outcomes: all levels
     eststo clear
     didpsm_reg3, dv(irr_corn_ins_acres) prefix(a)
     didpsm_reg3, dv(irr_corn_yield) prefix(b)
     didpsm_reg3, dv(irr_corn_cov_level) prefix(c)
+    didpsm_reg3, dv(irr_corn_liab) prefix(d)
     export_didpsm_table ///
-        a1 b1 c1, ///
+        a1 b1 c1 d1, ///
         using("$DIDPSM_OUTDIR/DID_table2B_`matchslug'.tex") ///
         title("Matched DiD: Agricultural outcomes: all levels") ///
         matchlab("`matchlab'") ///
-        mtitles(`"Insured acres"' `"Yield"' `"Coverage level"')
+        mtitles(`"Insured acres"' `"Yield"' `"Coverage level"' `"Liability"')
 
     * TABLE 3: Insurance rates and liability-adjusted costs
     eststo clear
@@ -312,20 +357,6 @@ program define run_didpsm_tables
         matchlab("`matchlab'") ///
         mtitles(`"Total cost per insured acre"' `"Premium per insured acre"' `"Subsidy per insured acre"')
 
-    * TABLE 5: Corn production and acreage differences
-    eststo clear
-    didpsm_reg3, dv(irr_corn_prod) prefix(a)
-    didpsm_reg3, dv(irr_corn_ln_prod) prefix(b)
-    didpsm_reg3, dv(irr_corn_prod_per_ins_acre) prefix(c)
-    didpsm_reg3, dv(irr_corn_prod_ppa) prefix(d)
-    didpsm_reg3, dv(irr_corn_ins_minus_harv) prefix(e)
-    didpsm_reg3, dv(irr_corn_plant_minus_harv) prefix(f)
-    export_didpsm_table ///
-        a1 b1 c1 d1 e1 f1, ///
-        using("$DIDPSM_OUTDIR/DID_table5_`matchslug'.tex") ///
-        title("Matched DiD: Corn production and acreage differences") ///
-        matchlab("`matchlab'") ///
-        mtitles(`"Irr. corn production"' `"Ln(Irr. corn production)"' `"Production / insured acre"' `"Production / planted acre"' `"Insured - harvested acres"' `"Planted - harvested acres"')
 
 end
 
@@ -334,14 +365,17 @@ end
 ********************************************************************************
 use `panel_master', clear
 merge m:1 fips using `county_match_rp', keep(3) nogen
+keep if common_sample == 1
 run_didpsm_tables, matchslug(psm_preinsurance) matchlab("Pre-treatment insurance")
 
 use `panel_master', clear
 merge m:1 fips using `county_match_st', keep(3) nogen
+keep if common_sample == 1
 run_didpsm_tables, matchslug(psm_groundwater) matchlab("Groundwater")
 
 use `panel_master', clear
 merge m:1 fips using `county_match_both', keep(3) nogen
+keep if common_sample == 1
 run_didpsm_tables, matchslug(psm_both) matchlab("Pre-treatment insurance and groundwater")
 
 ********************************************************************************

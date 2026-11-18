@@ -1,5 +1,5 @@
 ********************************************************************************
-* CDH matched county-year DiD: Tables 2, 2B, 3, 4, 4B, 4C, 5
+* CDH matched county-year DiD: Tables 2, 2B, 3, 4, 4B, 4C
 *
 * Based on 006_03 CDH_regressions_w_PSM(7).do.
 * Uses did_multiplegt_stat with continuous allocation, switchers vs stayers,
@@ -7,7 +7,7 @@
 * Both specifications are estimated: nocontrols and controls.
 * Outcomes are READ from the processing script; never recreated or rescaled.
 *
-* Tables and run logs: ${estpath}nov8_2026/CDH/
+* Tables and run logs: ${estpath}nov19_2026/CDH/
 * Figure exports are not included: the source uses graph_off and does not
 * estimate a dynamic event-study specification.
 ********************************************************************************
@@ -16,23 +16,39 @@ clear all
 set more off
 local match_nn 1
 local treatvar allocation
-* Retain nonweather controls and replace weather controls with the eight requested measures.
+* PDSI controls: four March-bin indicators and four prior-five-year
+* annual-PDSI bin counts. The [-1, 1) category is omitted as the
+* reference group in both sets, avoiding perfect collinearity.
+* All other weather and nonweather controls remain unchanged.
 local cdh_controls drill_mor irr_acres_mor ///
     precip_lag1 precip_5yr_avg maxtemp_lag1 maxtemp_5yr_avg ///
-    pdsi_march_final pdsi_5yr_avg gdd_lag1 gdd_5yr_avg ///
+    pdsi_march_lt_neg3 pdsi_march_neg3_to_neg1 ///
+    pdsi_march_pos1_to_3 pdsi_march_gt_3 ///
+    pdsi_prev5_n_lt_neg3 pdsi_prev5_n_neg3_to_neg1 ///
+    pdsi_prev5_n_pos1_to_3 pdsi_prev5_n_gt_3 ///
+    gdd_lag1 gdd_5yr_avg ///
     sat_thick sat_thick_sq
 local cdh_outcomes ///
     irr_corn_ln_ins_acres irr_corn_ln_yield irr_corn_cov_level ///
-    irr_corn_ins_acres irr_corn_yield ///
+    irr_corn_ins_acres irr_corn_yield irr_corn_ln_liab irr_corn_liab ///
     irr_corn_mean_rp irr_corn_cpl irr_corn_ppl irr_corn_spl ///
     irr_corn_total_cost irr_corn_prem irr_corn_sub ///
     irr_corn_ln_total_cost irr_corn_ln_prem irr_corn_ln_sub ///
-    irr_corn_cost_pia irr_corn_prem_pia irr_corn_sub_pia ///
-    irr_corn_prod irr_corn_ln_prod irr_corn_prod_per_ins_acre ///
-    irr_corn_prod_ppa irr_corn_ins_minus_harv irr_corn_plant_minus_harv
+    irr_corn_cost_pia irr_corn_prem_pia irr_corn_sub_pia
 
-global CDH_OUTDIR "${estpath}nov8_2026/CDH"
-capture mkdir "${estpath}nov8_2026"
+* Outcomes for Tables 2-4C, excluding yield outcomes in column 2 of
+* Tables 2 and 2B. All of these are required to be nonmissing for every
+* non-yield CDH model (both nocontrols and controls specifications).
+local cdh_common_outcomes ///
+    irr_corn_ln_ins_acres irr_corn_cov_level irr_corn_ln_liab ///
+    irr_corn_ins_acres irr_corn_liab ///
+    irr_corn_mean_rp irr_corn_cpl irr_corn_ppl irr_corn_spl ///
+    irr_corn_total_cost irr_corn_prem irr_corn_sub ///
+    irr_corn_ln_total_cost irr_corn_ln_prem irr_corn_ln_sub ///
+    irr_corn_cost_pia irr_corn_prem_pia irr_corn_sub_pia
+
+global CDH_OUTDIR "${estpath}nov19_2026/CDH"
+capture mkdir "${estpath}nov19_2026"
 capture mkdir "$CDH_OUTDIR"
 
 capture which psmatch2
@@ -58,6 +74,22 @@ foreach v in fips year state_fips ogal_share allocation irr_corn_mean_rp ///
     confirm numeric variable `v'
 }
 xtset fips year
+
+* Define eligibility, but DO NOT restrict the panel before matching.
+* Both controls and nocontrols models are evaluated on this same universe.
+* Yield outcomes are intentionally absent from the complete-case list.
+* Table 5 outcomes are neither estimated nor used for sample selection.
+local cdh_required `cdh_common_outcomes' `cdh_controls' fips year `treatvar'
+egen byte __cdh_missing = rowmiss(`cdh_required')
+gen byte cdh_common_sample = (__cdh_missing == 0)
+drop __cdh_missing
+label var cdh_common_sample "Complete-case CDH sample, all non-yield outcomes and controls (Tables 2-4C)"
+quietly count if cdh_common_sample
+if r(N) == 0 {
+    di as error "CDH common sample is empty. Check outcomes and controls."
+    exit 2000
+}
+di as result "Eligible observations in full CDH panel: " r(N)
 
 ********************************************************************************
 * 2. Build county-level matching variables, as in 006_01
@@ -178,6 +210,16 @@ program define run_cdh_one
         quietly count
         local N_enter = r(N)
         di as text "Observations entering command before internal restrictions: " `N_enter'
+        * With the common-panel restriction, the pre-command observation count
+        * must be identical for every non-yield outcome and both specifications.
+        * did_multiplegt_stat may still report a smaller estimator-specific N
+        * due to switcher/stayer and panel eligibility rules.
+        if !inlist("`dv'", "irr_corn_ln_yield", "irr_corn_yield") {
+            if `N_enter' != $CDH_MATCH_N {
+                di as error "Non-yield model input N differs from common matched sample N."
+                exit 459
+            }
+        }
         quietly levelsof fips, local(groups)
         local G_enter = wordcount("`groups'")
         di as text "Number of counties before internal restrictions: " `G_enter'
@@ -338,16 +380,46 @@ end
 ********************************************************************************
 use `panel_master', clear
 merge m:1 fips using `county_match_rp', keep(3) nogen
+* Restrict AFTER matching. Every outcome and both control specifications
+* now receive the same county-year observations (yield can drop more).
+keep if cdh_common_sample == 1
+quietly count
+if r(N) == 0 {
+    di as error "No eligible matched observations for rp."
+    exit 2000
+}
+di as result "CDH common matched panel for rp: " r(N) " county-years"
+global CDH_MATCH_N = r(N)
 run_cdh_sample, matchslug(psm_preinsurance) treatvar(`treatvar') ///
     outcomes("`cdh_outcomes'") controls("`cdh_controls'") statuspost(`statuspost')
 
 use `panel_master', clear
 merge m:1 fips using `county_match_st', keep(3) nogen
+* Restrict AFTER matching. Every outcome and both control specifications
+* now receive the same county-year observations (yield can drop more).
+keep if cdh_common_sample == 1
+quietly count
+if r(N) == 0 {
+    di as error "No eligible matched observations for st."
+    exit 2000
+}
+di as result "CDH common matched panel for st: " r(N) " county-years"
+global CDH_MATCH_N = r(N)
 run_cdh_sample, matchslug(psm_groundwater) treatvar(`treatvar') ///
     outcomes("`cdh_outcomes'") controls("`cdh_controls'") statuspost(`statuspost')
 
 use `panel_master', clear
 merge m:1 fips using `county_match_both', keep(3) nogen
+* Restrict AFTER matching. Every outcome and both control specifications
+* now receive the same county-year observations (yield can drop more).
+keep if cdh_common_sample == 1
+quietly count
+if r(N) == 0 {
+    di as error "No eligible matched observations for both."
+    exit 2000
+}
+di as result "CDH common matched panel for both: " r(N) " county-years"
+global CDH_MATCH_N = r(N)
 run_cdh_sample, matchslug(psm_both) treatvar(`treatvar') ///
     outcomes("`cdh_outcomes'") controls("`cdh_controls'") statuspost(`statuspost')
 
@@ -503,14 +575,14 @@ program define export_cdh_family_tables
     preserve
         keep if matchslug == `"`matchslug'"' & spec == `"`spec'"' & rc == 0
         export_cdh_table, ///
-            outcomes("irr_corn_ln_ins_acres irr_corn_ln_yield irr_corn_cov_level") ///
-            mtitles(`"Ln(Insured acres)"' `"Ln(Yield)"' `"Coverage level"') ///
+            outcomes("irr_corn_ln_ins_acres irr_corn_ln_yield irr_corn_cov_level irr_corn_ln_liab") ///
+            mtitles(`"Ln(Insured acres)"' `"Ln(Yield)"' `"Coverage level"' `"Ln(Liability)"') ///
             using("$CDH_OUTDIR/CDH_table2_`matchslug'_`spec'.tex") ///
             title(`"CDH matched DiD: Logged acreage and yield; coverage in levels"') ///
             matchlab(`"`matchlab'"') spec("`spec'")
         export_cdh_table, ///
-            outcomes("irr_corn_ins_acres irr_corn_yield irr_corn_cov_level") ///
-            mtitles(`"Insured acres"' `"Yield"' `"Coverage level"') ///
+            outcomes("irr_corn_ins_acres irr_corn_yield irr_corn_cov_level irr_corn_liab") ///
+            mtitles(`"Insured acres"' `"Yield"' `"Coverage level"' `"Liability"') ///
             using("$CDH_OUTDIR/CDH_table2B_`matchslug'_`spec'.tex") ///
             title(`"CDH matched DiD: Agricultural outcomes in levels"') ///
             matchlab(`"`matchlab'"') spec("`spec'")
@@ -537,12 +609,6 @@ program define export_cdh_family_tables
             mtitles(`"Cost/insured acre"' `"Premium/insured acre"' `"Subsidy/insured acre"') ///
             using("$CDH_OUTDIR/CDH_table4C_`matchslug'_`spec'.tex") ///
             title(`"CDH matched DiD: Insurance expenditure per insured acre"') ///
-            matchlab(`"`matchlab'"') spec("`spec'")
-        export_cdh_table, ///
-            outcomes("irr_corn_prod irr_corn_ln_prod irr_corn_prod_per_ins_acre irr_corn_prod_ppa irr_corn_ins_minus_harv irr_corn_plant_minus_harv") ///
-            mtitles(`"Corn production"' `"Ln(Production)"' `"Production/insured acre"' `"Production/planted acre"' `"Insured - harvested acres"' `"Planted - harvested acres"') ///
-            using("$CDH_OUTDIR/CDH_table5_`matchslug'_`spec'.tex") ///
-            title(`"CDH matched DiD: Production and acreage differences"') ///
             matchlab(`"`matchlab'"') spec("`spec'")
     restore
 end
