@@ -2,7 +2,11 @@
 import delimited "${datapath}paneled_weather_cropland_2000_2020.csv", clear
 
 	destring maxtemp pdsi precip maxtemp_5yr_avg pdsi_5yr_avg ///
-		precip_5yr_avg pdsi_march_final, replace force
+		precip_5yr_avg pdsi_march_final pdsi_march_lt_neg3 ///
+		pdsi_march_neg3_to_neg1 pdsi_march_neg1_to_1 pdsi_march_pos1_to_3 ///
+		pdsi_march_gt_3	pdsi_prev5_n_gt_3 pdsi_prev5_n_lt_neg3 ///
+		pdsi_prev5_n_neg3_to_neg1 pdsi_prev5_n_neg1_to_1 pdsi_prev5_n_pos1_to_3 ///
+		pdsi_prev5_n_gt_3, replace force
 	
 preserve
 	import delimited "${datapath}paneled_gdd_cropland_2000_2020.csv", clear
@@ -782,19 +786,6 @@ foreach crop in corn sb sorghum {
 	bysort fips: egen cs_did2 = max(min_cs2)
 	replace cs_did2 = 0 if cs_did2 == .
 
-********************************************************************************
-*******************		 CREATING A CONSISTENT SAMPLE		********************
-********************************************************************************
-
-xtset fips year
-*Creating the initial balanced panel
-reg irr_corn_mean_rp allocation drill_mor irr_acres_mor precip_lag1 maxtemp_lag1 ///
- pdsi sat_thick sat_thick_sq i.state_fips##year, vce(cluster fips)
-
-	generate corn_sample = e(sample)
-	
-	keep if corn_sample == 1
-
 
 ********************************************************************************
 *	CREATING A DIFFERENCE VARIABLE BETWEEN IRRIGATED AND DRYLAND INSURANCE VARIABLES
@@ -821,6 +812,7 @@ foreach crop of local crops {
 		la var `crop'_irr_cov_lvl_diff "Coverage Level difference between irrigated and dryland"
 		
 }
+
 
 save "${datapath}nrd_data_cleaned", replace
 
